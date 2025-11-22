@@ -2,6 +2,8 @@
 import React, { useState } from "react";
 import { API_BASE_URL } from "../App";
 
+const thisYearDefault = new Date().getFullYear().toString();
+
 function formatCurrency(v) {
   if (v == null || Number.isNaN(v)) return "-";
   return v.toLocaleString("en-US", {
@@ -11,48 +13,70 @@ function formatCurrency(v) {
   });
 }
 
+function percentChange(current, previous) {
+  if (previous === 0 || previous == null) return null;
+  return ((current - previous) / previous) * 100;
+}
+
 function YearlySales() {
-  const currentYear = new Date().getFullYear();
-  const [year, setYear] = useState(String(currentYear)); // "2025"
+  const [year, setYear] = useState(thisYearDefault);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [data, setData] = useState(null);
+
+  const [currentYear, setCurrentYear] = useState(null);
+  const [prevYear, setPrevYear] = useState(null);
 
   async function fetchYearly() {
     setLoading(true);
     setError("");
+    setCurrentYear(null);
+    setPrevYear(null);
+
     try {
-      const url = new URL("/api/sales/yearly", API_BASE_URL);
-      url.searchParams.set("year", year);
+      const curUrl = new URL("/api/sales/yearly", API_BASE_URL);
+      curUrl.searchParams.set("year", year);
 
-      const res = await fetch(url.toString(), {
-        headers: {
-          "Content-Type": "application/json",
-          // if you set BASIC_AUTH_PASSCODE in backend:
-          // "x-passcode": "your-passcode-here",
-        },
+      const curRes = await fetch(curUrl.toString(), {
+        headers: { "Content-Type": "application/json" },
       });
-
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
+      if (!curRes.ok) {
+        const body = await curRes.json().catch(() => ({}));
         throw new Error(body.error || "Failed to fetch yearly sales");
       }
+      const curJson = await curRes.json();
+      setCurrentYear(curJson);
 
-      const json = await res.json();
-      setData(json);
+      const prevStr = (parseInt(year, 10) - 1).toString();
+      const prevUrl = new URL("/api/sales/yearly", API_BASE_URL);
+      prevUrl.searchParams.set("year", prevStr);
+
+      const prevRes = await fetch(prevUrl.toString(), {
+        headers: { "Content-Type": "application/json" },
+      });
+      if (prevRes.ok) {
+        const prevJson = await prevRes.json();
+        setPrevYear(prevJson);
+      } else {
+        setPrevYear(null);
+      }
     } catch (err) {
+      console.error(err);
       setError(err.message || "Error loading yearly sales");
-      setData(null);
+      setCurrentYear(null);
+      setPrevYear(null);
     } finally {
       setLoading(false);
     }
   }
 
-  const locations = data?.locations || [];
-  const avgOrderChain =
-    data && data.grandTotal && data.grandCount
-      ? data.grandTotal / data.grandCount
+  const months = currentYear?.months || []; // assuming backend returns months[]
+
+  const prevTotal = prevYear?.grandTotal ?? null;
+  const pct =
+    currentYear?.grandTotal != null && prevTotal != null
+      ? percentChange(currentYear.grandTotal, prevTotal)
       : null;
+  const isUp = pct != null && pct >= 0;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -69,18 +93,16 @@ function YearlySales() {
           Year:&nbsp;
           <input
             type="number"
-            min="2020"
-            max="2100"
             value={year}
             onChange={(e) => setYear(e.target.value)}
             style={{
-              width: 100,
               background: "#020617",
               color: "#e5e7eb",
               borderRadius: 6,
               border: "1px solid #374151",
               padding: "6px 8px",
               fontSize: 13,
+              width: 100,
             }}
           />
         </label>
@@ -103,7 +125,7 @@ function YearlySales() {
         </button>
       </div>
 
-      {/* Errors */}
+      {/* Error */}
       {error && (
         <div
           style={{
@@ -120,16 +142,17 @@ function YearlySales() {
       )}
 
       {/* Data */}
-      {data && (
+      {currentYear && (
         <>
-          {/* Summary cards */}
+          {/* Summary */}
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))",
+              gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
               gap: 12,
             }}
           >
+            {/* Year card */}
             <div
               style={{
                 padding: 12,
@@ -140,12 +163,15 @@ function YearlySales() {
               }}
             >
               <div style={{ fontSize: 12, color: "#9ca3af" }}>Year</div>
-              <div style={{ fontSize: 16, fontWeight: 600 }}>{year}</div>
+              <div style={{ fontSize: 16, fontWeight: 600 }}>
+                {currentYear.year ?? year}
+              </div>
               <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
-                Range: {data.range?.start} → {data.range?.end}
+                TZ: {currentYear.timezone}
               </div>
             </div>
 
+            {/* Total */}
             <div
               style={{
                 padding: 12,
@@ -156,32 +182,60 @@ function YearlySales() {
             >
               <div style={{ fontSize: 12, color: "#9ca3af" }}>Total sales</div>
               <div style={{ fontSize: 20, fontWeight: 700 }}>
-                {data.grandTotalFormatted}
+                {currentYear.grandTotalFormatted}
               </div>
               <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
-                All locations this year
+                Across all locations
               </div>
             </div>
 
+            {/* Comparison card */}
             <div
               style={{
                 padding: 12,
                 borderRadius: 12,
-                border: "1px solid #1d4ed8",
-                background: "rgba(37,99,235,0.12)",
+                border: "1px solid #4b5563",
+                background: "rgba(75,85,99,0.16)",
               }}
             >
-              <div style={{ fontSize: 12, color: "#9ca3af" }}>Orders</div>
-              <div style={{ fontSize: 20, fontWeight: 700 }}>
-                {data.grandCount ?? "-"}
+              <div style={{ fontSize: 12, color: "#9ca3af" }}>
+                Vs previous year
               </div>
-              <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
-                Avg ticket: {formatCurrency(avgOrderChain)}
-              </div>
+              {prevTotal == null ? (
+                <div style={{ fontSize: 12, color: "#6b7280", marginTop: 4 }}>
+                  No data for previous year.
+                </div>
+              ) : (
+                <>
+                  <div
+                    style={{
+                      fontSize: 14,
+                      marginTop: 4,
+                      color: "#e5e7eb",
+                    }}
+                  >
+                    {formatCurrency(prevTotal)} in{" "}
+                    {prevYear.year ?? (parseInt(year, 10) - 1)}
+                  </div>
+                  {pct != null && (
+                    <div
+                      style={{
+                        marginTop: 4,
+                        fontSize: 13,
+                        fontWeight: 600,
+                        color: isUp ? "#4ade80" : "#fb7185",
+                      }}
+                    >
+                      {isUp ? "▲" : "▼"}{" "}
+                      {Math.abs(pct).toFixed(1)}% vs previous year
+                    </div>
+                  )}
+                </>
+              )}
             </div>
           </div>
 
-          {/* Locations */}
+          {/* Month table */}
           <div style={{ marginTop: 16 }}>
             <div
               style={{
@@ -190,80 +244,110 @@ function YearlySales() {
                 marginBottom: 6,
               }}
             >
-              Yearly totals by location
+              Month-by-month breakdown
             </div>
 
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
-                gap: 10,
-              }}
-            >
-              {locations.map((loc) => {
-                const avg =
-                  loc.total && loc.count ? loc.total / loc.count : null;
-                return (
-                  <div
-                    key={loc.locationId}
-                    style={{
-                      padding: 10,
-                      borderRadius: 12,
-                      border: "1px solid #111827",
-                      background:
-                        "linear-gradient(135deg, #020617 0%, #020617 60%, #020617 100%)",
-                    }}
-                  >
-                    <div
-                      style={{
-                        fontSize: 14,
-                        fontWeight: 600,
-                        color: "#e5e7eb",
-                      }}
-                    >
-                      {loc.locationName}
-                    </div>
-
-                    <div
-                      style={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                        marginTop: 8,
-                        fontSize: 12,
-                      }}
-                    >
-                      <div>
-                        <div style={{ color: "#9ca3af" }}>Total</div>
-                        <div style={{ fontWeight: 600 }}>
-                          {loc.totalFormatted}
-                        </div>
-                      </div>
-                      <div>
-                        <div style={{ color: "#9ca3af" }}>Orders</div>
-                        <div style={{ fontWeight: 600 }}>{loc.count}</div>
-                      </div>
-                      <div>
-                        <div style={{ color: "#9ca3af" }}>Avg ticket</div>
-                        <div style={{ fontWeight: 600 }}>
-                          {formatCurrency(avg)}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-
-              {locations.length === 0 && (
-                <div
+            {months.length === 0 ? (
+              <div
+                style={{
+                  fontSize: 13,
+                  color: "#6b7280",
+                }}
+              >
+                No monthly data available.
+              </div>
+            ) : (
+              <div
+                style={{
+                  overflowX: "auto",
+                  borderRadius: 10,
+                  border: "1px solid #111827",
+                }}
+              >
+                <table
                   style={{
-                    fontSize: 13,
-                    color: "#6b7280",
+                    width: "100%",
+                    borderCollapse: "collapse",
+                    fontSize: 12,
                   }}
                 >
-                  No locations in this report.
-                </div>
-              )}
-            </div>
+                  <thead>
+                    <tr
+                      style={{
+                        background: "rgba(15,23,42,0.9)",
+                        color: "#9ca3af",
+                      }}
+                    >
+                      <th
+                        style={{
+                          textAlign: "left",
+                          padding: "8px 10px",
+                          borderBottom: "1px solid #111827",
+                        }}
+                      >
+                        Month
+                      </th>
+                      <th
+                        style={{
+                          textAlign: "right",
+                          padding: "8px 10px",
+                          borderBottom: "1px solid #111827",
+                        }}
+                      >
+                        Total
+                      </th>
+                      <th
+                        style={{
+                          textAlign: "right",
+                          padding: "8px 10px",
+                          borderBottom: "1px solid #111827",
+                        }}
+                      >
+                        Orders
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {months.map((m) => (
+                      <tr
+                        key={m.month}
+                        style={{
+                          borderBottom: "1px solid #020617",
+                          background: "rgba(15,23,42,0.6)",
+                        }}
+                      >
+                        <td
+                          style={{
+                            padding: "6px 10px",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {m.month}
+                        </td>
+                        <td
+                          style={{
+                            padding: "6px 10px",
+                            textAlign: "right",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {m.totalFormatted ?? formatCurrency(m.total)}
+                        </td>
+                        <td
+                          style={{
+                            padding: "6px 10px",
+                            textAlign: "right",
+                            whiteSpace: "nowrap",
+                          }}
+                        >
+                          {m.count ?? "-"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         </>
       )}

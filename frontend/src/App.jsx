@@ -5,6 +5,7 @@ import DailySales from "./components/DailySales";
 import WeeklySales from "./components/WeeklySales";
 import MonthlySales from "./components/MonthlySales";
 import YearlySales from "./components/YearlySales";
+import ItemSalesExplorer from './components/ItemSalesExplorer'
 
 export const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
@@ -15,7 +16,8 @@ const TABS = [
   { id: "monthly", label: "Monthly" },
   { id: "yearly", label: "Yearly" },
   { id: "hourly", label: "Hourly Heatmap" },
-  { id: "items", label: "Item Sales" },
+  {activeTab === 'items' && <ItemSalesExplorer />},
+
 ];
 
 function App() {

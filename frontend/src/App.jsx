@@ -1,12 +1,18 @@
 import React, { useState } from 'react'
-import DailySales from './components/DailySales'
 import HourlyHeatmap from './components/HourlyHeatmap'
 import ItemSales from './components/ItemSales'
+import DailySales from "./components/DailySales";
+import WeeklySales from "./components/WeeklySales";
+import MonthlySales from "./components/MonthlySales";
 
 const TABS = [
   { id: 'daily', label: 'Daily Sales' },
   { id: 'hourly', label: 'Hourly Heatmap' },
   { id: 'items', label: 'Item Sales' },
+  {activeTab === "daily" && <DailySales />},
+{activeTab === "weekly" && <WeeklySales />},
+{activeTab === "monthly" && <MonthlySales />},
+
 ]
 
 export const API_BASE_URL =

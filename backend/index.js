@@ -203,6 +203,18 @@ app.get("/api/sales", async (req, res) => {
   }
 });
 
+
+app.get("/api/test-square", async (req, res) => {
+  try {
+    const resp = await client.locations.list();
+    res.json({ ok: true, locations: resp.result.locations || [] });
+  } catch (err) {
+    console.error("TEST-SQUARE ERROR:", err);
+    res.status(500).json({ ok: false, error: err });
+  }
+});
+
+
 // Weekly
 app.get("/api/sales/weekly", async (req, res) => {
   try {

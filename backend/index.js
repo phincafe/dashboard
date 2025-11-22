@@ -10,6 +10,7 @@ dotenv.config();
 
 const app = express();
 
+
 // Basic config
 const PORT = process.env.PORT || 4000;
 const allowedOrigins = [
@@ -53,6 +54,8 @@ const client = new SquareClient({
   environment: squareEnvironment,
 });
 
+console.log("Square env:", squareEnvironment);
+console.log("Has access token:", !!process.env.SQUARE_ACCESS_TOKEN);
 // Root health check
 app.get("/", (req, res) => {
   res.json({

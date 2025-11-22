@@ -24,19 +24,37 @@ export function registerItemRoutes(app, client) {
    * Helper: build human-readable insights string
    * First tries OpenAI (if API key present), falls back to rule-based text.
    */
+    /**
+   * Helper: build human-readable insights string
+   * Now focused on: summary + concrete business suggestions.
+   * Uses OpenAI if available, otherwise a rule-based fallback.
+   */
   async function buildSimpleInsights({ scopeLabel, dateLabel, items, total }) {
     // Fallback if no data
     if (!items || items.length === 0) {
-      return `No item sales found for ${scopeLabel} on ${dateLabel}.`;
+      return [
+        `No item sales found for ${scopeLabel} on ${dateLabel}.`,
+        `Consider checking if this location/day had closures, POS issues, or holidays, and verify your Square reporting is pulling correctly.`,
+      ].join(" ");
     }
 
     const topItems = items.slice(0, 5);
     const topItem = topItems[0];
+    const bottomItems = items.slice(-5);
 
     const topTotal = topItems.reduce((sum, it) => sum + it.total, 0);
     const topPct = total > 0 ? (topTotal / total) * 100 : 0;
 
     const topListText = topItems
+      .map(
+        (it, idx) =>
+          `${idx + 1}. ${it.itemName} (${it.quantity} sold, $${it.total.toFixed(
+            2
+          )})`
+      )
+      .join("; ");
+
+    const bottomListText = bottomItems
       .map(
         (it, idx) =>
           `${idx + 1}. ${it.itemName} (${it.quantity} sold, $${it.total.toFixed(
@@ -56,24 +74,42 @@ export function registerItemRoutes(app, client) {
         1
       )}% of total item revenue.`,
       `Top items: ${topListText}.`,
+      `Lower-volume items that might be reviewed for recipe, pricing, or menu placement: ${bottomListText}.`,
+      `You could test highlighting the top 1–2 drinks on the menu/IG stories, bundling them with food (banh mi, pastries, musubi), and reviewing whether the bottom sellers should be improved (better description, photos, or sampling) or rotated off the menu to simplify operations.`,
     ].join(" ");
 
-    // If OpenAI is not configured, just return the fallback
+    // If OpenAI is not configured, use the richer fallback
     if (!openaiClient) {
       return fallback;
     }
 
     try {
       const prompt = [
-        `You are a data analyst for a multi-location Vietnamese coffee shop brand named Phin Cafe.`,
-        `Write a short, friendly insight for the owner based on these stats.`,
+        `You are a senior data & operations advisor for a multi-location Vietnamese coffee shop brand named "Phin Cafe".`,
+        `You are given item-level sales for a specific time period and location scope.`,
         ``,
-        `Scope: ${scopeLabel}`,
-        `Date or Range: ${dateLabel}`,
+        `GOALS:`,
+        `- Help the owner understand what is selling well and what is underperforming.`,
+        `- Suggest specific actions to improve revenue, menu performance, and operations.`,
+        `- Think about upsell, cross-sell, bundling, pricing, staffing, and marketing.`,
+        ``,
+        `CONTEXT:`,
+        `Scope (locations): ${scopeLabel}`,
+        `Date or range: ${dateLabel}`,
         `Total item revenue: $${total.toFixed(2)}`,
         ``,
-        `Top items:`,
+        `Top items (by sales):`,
         topItems
+          .map(
+            (it, idx) =>
+              `${idx + 1}. ${it.itemName} – qty ${it.quantity}, $${it.total.toFixed(
+                2
+              )}`
+          )
+          .join("\n"),
+        ``,
+        `Lower-volume items (at the bottom of the list):`,
+        bottomItems
           .map(
             (it, idx) =>
               `${idx + 1}. ${it.itemName} – qty ${it.quantity}, $${it.total.toFixed(
@@ -86,12 +122,20 @@ export function registerItemRoutes(app, client) {
           1
         )}% of revenue.`,
         ``,
-        `Write 3–5 sentences.`,
-        `Focus on:`,
-        `- What items are driving sales (especially signature drinks like Egg Coffee, Coconut Coffee, Salted Coffee, etc.)`,
-        `- Any balance between drinks vs food (banh mi, musubi, pastries) if visible`,
-        `- A gentle suggestion that might help operations or marketing (e.g. feature a top drink, check stock for a strong seller).`,
-        `Do NOT talk about missing data or limitations. Sound confident, helpful, and business-focused.`,
+        `INSTRUCTIONS:`,
+        `Write 2 short sections in plain text (no markdown headings):`,
+        ``,
+        `1) High-level summary (2–3 sentences)`,
+        `   - What is driving revenue?`,
+        `   - Any pattern between signature drinks (Egg Coffee, Coconut, Salted Coffee, etc.) and food (banh mi, musubi, pastries) if visible from names?`,
+        ``,
+        `2) Actionable suggestions (3–6 bullet-style sentences starting with verbs like "Feature", "Promote", "Reduce", "Test", "Check")`,
+        `   - Suggest menu actions: feature top items, bundle with food, consider removing or reworking weak items.`,
+        `   - Suggest marketing actions: IG stories, sampling, in-store signage for top items or new items.`,
+        `   - Suggest operations actions: prep levels for strong sellers, check inventory for popular items, simplify the menu if too many low performers.`,
+        `   - If appropriate, propose experiments like "run a limited-time promo on X during morning rush" rather than vague ideas.`,
+        ``,
+        `Do NOT talk about missing data or limitations. Sound confident, practical, and business-focused.`,
       ].join("\n");
 
       const response = await openaiClient.responses.create({
@@ -108,6 +152,7 @@ export function registerItemRoutes(app, client) {
       return fallback;
     }
   }
+
 
 
   /**

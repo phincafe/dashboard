@@ -13,37 +13,64 @@ function formatCurrency(v) {
   });
 }
 
+function percentChange(current, previous) {
+  if (previous === 0 || previous == null) return null;
+  return ((current - previous) / previous) * 100;
+}
+
 function DailySales() {
   const [date, setDate] = useState(todayISO);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [data, setData] = useState(null);
+
+  const [data, setData] = useState(null);           // current day
+  const [prevWeekData, setPrevWeekData] = useState(null); // same day last week
 
   async function fetchDaily() {
     setLoading(true);
     setError("");
+    setData(null);
+    setPrevWeekData(null);
+
     try {
-      const url = new URL("/api/sales", API_BASE_URL);
-      url.searchParams.set("date", date);
+      // current day
+      const currentUrl = new URL("/api/sales", API_BASE_URL);
+      currentUrl.searchParams.set("date", date);
 
-      const res = await fetch(url.toString(), {
-        headers: {
-          "Content-Type": "application/json",
-          // If you set BASIC_AUTH_PASSCODE in backend:
-          // "x-passcode": "your-passcode-here",
-        },
+      const currentRes = await fetch(currentUrl.toString(), {
+        headers: { "Content-Type": "application/json" },
       });
-
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
+      if (!currentRes.ok) {
+        const body = await currentRes.json().catch(() => ({}));
         throw new Error(body.error || "Failed to fetch daily sales");
       }
+      const currentJson = await currentRes.json();
+      setData(currentJson);
 
-      const json = await res.json();
-      setData(json);
+      // same weekday last week = date - 7 days
+      const d = new Date(date);
+      d.setDate(d.getDate() - 7);
+      const lastWeekISO = d.toISOString().slice(0, 10);
+
+      const prevUrl = new URL("/api/sales", API_BASE_URL);
+      prevUrl.searchParams.set("date", lastWeekISO);
+
+      const prevRes = await fetch(prevUrl.toString(), {
+        headers: { "Content-Type": "application/json" },
+      });
+
+      if (prevRes.ok) {
+        const prevJson = await prevRes.json();
+        setPrevWeekData(prevJson);
+      } else {
+        // don't hard-fail if last week is missing
+        setPrevWeekData(null);
+      }
     } catch (err) {
+      console.error(err);
       setError(err.message || "Error loading daily sales");
       setData(null);
+      setPrevWeekData(null);
     } finally {
       setLoading(false);
     }
@@ -54,6 +81,15 @@ function DailySales() {
     data && data.grandTotal && data.grandCount
       ? data.grandTotal / data.grandCount
       : null;
+
+  const prevTotal = prevWeekData?.grandTotal ?? null;
+  const prevDateLabel = prevWeekData?.date ?? null;
+
+  const pct = data?.grandTotal != null && prevTotal != null
+    ? percentChange(data.grandTotal, prevTotal)
+    : null;
+
+  const isUp = pct != null && pct >= 0;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -128,6 +164,7 @@ function DailySales() {
               gap: 12,
             }}
           >
+            {/* Date */}
             <div
               style={{
                 padding: 12,
@@ -144,6 +181,7 @@ function DailySales() {
               </div>
             </div>
 
+            {/* Total sales */}
             <div
               style={{
                 padding: 12,
@@ -152,7 +190,9 @@ function DailySales() {
                 background: "rgba(22,163,74,0.12)",
               }}
             >
-              <div style={{ fontSize: 12, color: "#9ca3af" }}>Total sales</div>
+              <div style={{ fontSize: 12, color: "#9ca3af" }}>
+                Total sales
+              </div>
               <div style={{ fontSize: 20, fontWeight: 700 }}>
                 {data.grandTotalFormatted}
               </div>
@@ -161,6 +201,7 @@ function DailySales() {
               </div>
             </div>
 
+            {/* Orders */}
             <div
               style={{
                 padding: 12,
@@ -178,6 +219,7 @@ function DailySales() {
               </div>
             </div>
 
+            {/* Locations */}
             <div
               style={{
                 padding: 12,
@@ -193,6 +235,50 @@ function DailySales() {
               <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
                 With at least 1 payment
               </div>
+            </div>
+
+            {/* Comparison vs same day last week */}
+            <div
+              style={{
+                padding: 12,
+                borderRadius: 12,
+                border: "1px solid #4b5563",
+                background: "rgba(75,85,99,0.16)",
+              }}
+            >
+              <div style={{ fontSize: 12, color: "#9ca3af" }}>
+                Vs same day last week
+              </div>
+              {prevTotal == null ? (
+                <div style={{ fontSize: 12, color: "#6b7280", marginTop: 4 }}>
+                  No data for last week&apos;s same day.
+                </div>
+              ) : (
+                <>
+                  <div
+                    style={{
+                      fontSize: 14,
+                      marginTop: 4,
+                      color: "#e5e7eb",
+                    }}
+                  >
+                    {formatCurrency(prevTotal)} on {prevDateLabel}
+                  </div>
+                  {pct != null && (
+                    <div
+                      style={{
+                        marginTop: 4,
+                        fontSize: 13,
+                        fontWeight: 600,
+                        color: isUp ? "#4ade80" : "#fb7185",
+                      }}
+                    >
+                      {isUp ? "▲" : "▼"}{" "}
+                      {Math.abs(pct).toFixed(1)}% vs last week
+                    </div>
+                  )}
+                </>
+              )}
             </div>
           </div>
 

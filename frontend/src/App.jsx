@@ -1,41 +1,42 @@
-import React, { useState } from 'react'
-import HourlyHeatmap from './components/HourlyHeatmap'
-import ItemSales from './components/ItemSales'
+import React, { useState } from "react";
+import HourlyHeatmap from "./components/HourlyHeatmap";
+import ItemSales from "./components/ItemSales";
 import DailySales from "./components/DailySales";
 import WeeklySales from "./components/WeeklySales";
 import MonthlySales from "./components/MonthlySales";
-
-const TABS = [
-  { id: 'daily', label: 'Daily Sales' },
-  { id: 'hourly', label: 'Hourly Heatmap' },
-  { id: 'items', label: 'Item Sales' },
-  {activeTab === "daily" && <DailySales />},
-{activeTab === "weekly" && <WeeklySales />},
-{activeTab === "monthly" && <MonthlySales />},
-
-]
+import YearlySales from "./components/YearlySales";
 
 export const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL || 'http://localhost:4000'
+  import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
+
+const TABS = [
+  { id: "daily", label: "Daily" },
+  { id: "weekly", label: "Weekly" },
+  { id: "monthly", label: "Monthly" },
+  { id: "yearly", label: "Yearly" },
+  { id: "hourly", label: "Hourly Heatmap" },
+  { id: "items", label: "Item Sales" },
+];
 
 function App() {
-  const [activeTab, setActiveTab] = useState('daily')
+  const [activeTab, setActiveTab] = useState("daily");
 
   return (
-    <div style={{ padding: '24px', maxWidth: 1200, margin: '0 auto' }}>
+    <div style={{ padding: "24px", maxWidth: 1200, margin: "0 auto" }}>
       <header style={{ marginBottom: 24 }}>
         <h1 style={{ margin: 0, fontSize: 28 }}>Phin Cafe · Square Reports</h1>
-        <p style={{ marginTop: 4, color: '#9ca3af', fontSize: 14 }}>
-          React dashboard for your existing Square Daily / Hourly / Item reports.
+        <p style={{ marginTop: 4, color: "#9ca3af", fontSize: 14 }}>
+          Daily, weekly, monthly, yearly sales + hourly heatmap and item
+          performance.
         </p>
       </header>
 
       <nav
         style={{
-          display: 'flex',
+          display: "flex",
           gap: 8,
           marginBottom: 24,
-          flexWrap: 'wrap',
+          flexWrap: "wrap",
         }}
       >
         {TABS.map((tab) => (
@@ -44,12 +45,12 @@ function App() {
             onClick={() => setActiveTab(tab.id)}
             style={{
               borderRadius: 999,
-              padding: '8px 16px',
-              border: '1px solid #374151',
+              padding: "8px 16px",
+              border: "1px solid #374151",
               background:
-                activeTab === tab.id ? '#111827' : 'rgba(15,23,42,0.4)',
-              color: activeTab === tab.id ? '#f9fafb' : '#d1d5db',
-              cursor: 'pointer',
+                activeTab === tab.id ? "#111827" : "rgba(15,23,42,0.4)",
+              color: activeTab === tab.id ? "#f9fafb" : "#d1d5db",
+              cursor: "pointer",
               fontSize: 14,
             }}
           >
@@ -61,19 +62,22 @@ function App() {
       <section
         style={{
           borderRadius: 16,
-          border: '1px solid #1f2937',
+          border: "1px solid #1f2937",
           padding: 16,
           background:
-            'linear-gradient(135deg, rgba(15,23,42,0.95), rgba(15,23,42,0.85))',
-          boxShadow: '0 18px 45px rgba(0,0,0,0.45)',
+            "linear-gradient(135deg, rgba(15,23,42,0.95), rgba(15,23,42,0.85))",
+          boxShadow: "0 18px 45px rgba(0,0,0,0.45)",
         }}
       >
-        {activeTab === 'daily' && <DailySales />}
-        {activeTab === 'hourly' && <HourlyHeatmap />}
-        {activeTab === 'items' && <ItemSales />}
+        {activeTab === "daily" && <DailySales />}
+        {activeTab === "weekly" && <WeeklySales />}
+        {activeTab === "monthly" && <MonthlySales />}
+        {activeTab === "yearly" && <YearlySales />}
+        {activeTab === "hourly" && <HourlyHeatmap />}
+        {activeTab === "items" && <ItemSales />}
       </section>
 
-      <footer style={{ marginTop: 24, fontSize: 12, color: '#6b7280' }}>
+      <footer style={{ marginTop: 24, fontSize: 12, color: "#6b7280" }}>
         <div>Backend: {API_BASE_URL}</div>
         <div style={{ marginTop: 4 }}>
           Make sure Render frontend env has <code>VITE_API_BASE_URL</code> set
@@ -81,7 +85,7 @@ function App() {
         </div>
       </footer>
     </div>
-  )
+  );
 }
 
-export default App
+export default App;

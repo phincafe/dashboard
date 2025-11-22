@@ -54,8 +54,12 @@ const client = new SquareClient({
   environment: squareEnvironment,
 });
 
-console.log("Square env:", squareEnvironment);
-console.log("Has access token:", !!process.env.SQUARE_ACCESS_TOKEN);
+console.log("SQUARE_ENVIRONMENT raw:", process.env.SQUARE_ENVIRONMENT);
+console.log("Has SQUARE_ACCESS_TOKEN:", !!process.env.SQUARE_ACCESS_TOKEN);
+console.log(
+  "SQUARE_ACCESS_TOKEN debug:",
+  JSON.stringify(process.env.SQUARE_ACCESS_TOKEN).slice(0, 30) + "..."
+);
 // Root health check
 app.get("/", (req, res) => {
   res.json({

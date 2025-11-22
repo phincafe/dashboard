@@ -14,7 +14,7 @@ const TABS = [
   { id: "weekly", label: "Weekly" },
   { id: "monthly", label: "Monthly" },
   { id: "yearly", label: "Yearly" },
-  { id: "hourly", label: "Hourly Heatmap" },
+  { id: "hourly", label: "Heatmap" },
   { id: "items", label: "Items Explorer" }, // 🔹 new tab
 ];
 

@@ -6,19 +6,21 @@ import { SquareClient, SquareEnvironment, SquareError } from "square";
 import { registerHourlyRoutes } from "./hourlyRoutes.js";
 import { registerItemRoutes } from "./itemsRoutes.js";
 
-// At the top of index.js
-import OpenAI from "openai";
-const openai = process.env.OPENAI_API_KEY
-  ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
-  : null;
-
-
 dotenv.config();
 
+// --- Square client ---
+const client = new SquareClient({
+  token: process.env.SQUARE_ACCESS_TOKEN,
+  environment:
+    (process.env.SQUARE_ENV || "sandbox").toLowerCase() === "production"
+      ? SquareEnvironment.Production
+      : SquareEnvironment.Sandbox,
+});
+
+// --- Express app ---
 const app = express();
 
-// Basic config
-const PORT = process.env.PORT || 4000;
+// CORS – lock to your frontend origin
 const allowedOrigins = [
   process.env.FRONTEND_ORIGIN || "http://localhost:5173",
 ];
@@ -37,452 +39,840 @@ app.use(
 
 app.use(express.json());
 
-// Very simple passcode auth
+// Optional passcode via header x-passcode
+// Set BASIC_AUTH_PASSCODE in Render if you want protection.
 const basicPasscode = process.env.BASIC_AUTH_PASSCODE;
 if (basicPasscode) {
   app.use((req, res, next) => {
-    const passcode = req.headers["x-passcode"];
-    if (!passcode || passcode !== basicPasscode) {
+    const pass = req.headers["x-passcode"];
+    if (!pass || pass !== basicPasscode) {
       return res.status(401).json({ error: "Invalid passcode" });
     }
     next();
   });
 }
 
-// Square client
-const squareEnvironment =
-  process.env.SQUARE_ENVIRONMENT === "production"
-    ? SquareEnvironment.Production
-    : SquareEnvironment.Sandbox;
-
-const client = new SquareClient({
-  token: process.env.SQUARE_ACCESS_TOKEN,
-  environment: squareEnvironment,
-});
-
-console.log("SQUARE_ENVIRONMENT raw:", process.env.SQUARE_ENVIRONMENT);
-console.log("Has SQUARE_ACCESS_TOKEN:", !!process.env.SQUARE_ACCESS_TOKEN);
-
-// Root health check
-app.get("/", (req, res) => {
-  res.json({
-    ok: true,
-    message: "Square Reports API running",
-    time: DateTime.now().toISO(),
-  });
-});
-
-// Register feature routes (hourly + items)
+// Register hourly + item routes (same as old)
 registerHourlyRoutes(app, client);
 registerItemRoutes(app, client);
 
-const storeTimezone = process.env.STORE_TIMEZONE || "America/Los_Angeles";
+const STORE_TZ = process.env.STORE_TIMEZONE || "America/Los_Angeles";
 
-async function getAllLocations() {
-  const locationsResponse = await client.locations.list();
-  if (locationsResponse.errors) throw locationsResponse.errors;
-  const locations = locationsResponse.locations || [];
-  return locations;
-}
+// --- Helpers: PAYMENTS / REFUNDS ---
 
-async function aggregateSales(beginTime, endTime, locationIds) {
-  const ordersResponse = await client.orders.search({
-    locationIds,
-    query: {
-      filter: {
-        dateTimeFilter: {
-          createdAt: {
-            startAt: beginTime,
-            endAt: endTime,
-          },
-        },
-      },
-    },
+/**
+ * Detailed payments for ONE location (used for DAILY).
+ */
+async function aggregateForLocation(beginTime, endTime, locationId) {
+  const paymentsIterable = await client.payments.list({
+    beginTime,
+    endTime,
+    sortOrder: "ASC",
+    locationId,
   });
 
-  if (ordersResponse.errors) throw ordersResponse.errors;
+  let totalCents = 0;
+  let count = 0;
+  const payments = [];
 
-  const orders = ordersResponse.orders || [];
+  for await (const payment of paymentsIterable) {
+    if (!payment) continue;
+    if (payment.status && payment.status !== "COMPLETED") continue;
+
+    const raw = payment.amountMoney?.amount ?? 0n;
+    const amountCents =
+      typeof raw === "bigint" ? Number(raw) : Number(raw || 0);
+
+    totalCents += amountCents;
+    count += 1;
+
+    payments.push({
+      id: payment.id,
+      createdAt: payment.createdAt,
+      updatedAt: payment.updatedAt,
+      note: payment.note,
+      status: payment.status,
+      amount: amountCents / 100,
+      currency: payment.amountMoney?.currency || "USD",
+      buyerEmail: payment.buyerEmailAddress,
+      orderId: payment.orderId,
+      receiptUrl: payment.receiptUrl,
+      deviceDetails: payment.deviceDetails,
+      locationId: payment.locationId,
+    });
+  }
+
+  return { totalCents, count, payments };
+}
+
+/**
+ * Summary (no payments array) for ONE location.
+ * Used for weekly / monthly / yearly sales.
+ */
+async function aggregateForLocationSummary(beginTime, endTime, locationId) {
+  const paymentsIterable = await client.payments.list({
+    beginTime,
+    endTime,
+    sortOrder: "ASC",
+    locationId,
+  });
 
   let totalCents = 0;
   let count = 0;
 
-  for (const order of orders) {
-    const tenders = order.tenders || [];
-    for (const tender of tenders) {
-      if (tender.amountMoney && tender.amountMoney.amount != null) {
-        totalCents += Number(tender.amountMoney.amount);
-        count++;
-      }
-    }
+  for await (const payment of paymentsIterable) {
+    if (!payment) continue;
+    if (payment.status !== "COMPLETED") continue;
+
+    const raw = payment.amountMoney?.amount ?? 0n;
+    const amountCents =
+      typeof raw === "bigint" ? Number(raw) : Number(raw || 0);
+
+    totalCents += amountCents;
+    count++;
   }
 
   return {
     totalCents,
     count,
-    total: totalCents / 100,
   };
 }
 
-function parseDayRange(dateStr) {
-  const day = DateTime.fromISO(dateStr, { zone: storeTimezone }).startOf("day");
-  if (!day.isValid) throw new Error("Invalid date");
-  const start = day.toUTC().toISO();
-  const end = day.endOf("day").toUTC().toISO();
-  return { start, end, label: day.toISODate() };
+/**
+ * Refund aggregation for a single location.
+ */
+async function aggregateRefundsForLocation(beginTime, endTime, locationId) {
+  const refundsIterable = await client.refunds.list({
+    beginTime,
+    endTime,
+    sortOrder: "ASC",
+    locationId,
+  });
+
+  let totalCents = 0;
+  let count = 0;
+  const refunds = [];
+
+  for await (const refund of refundsIterable) {
+    if (!refund) continue;
+    if (refund.status && refund.status !== "COMPLETED") continue;
+
+    const raw = refund.amountMoney?.amount ?? 0n;
+    const amountCents =
+      typeof raw === "bigint" ? Number(raw) : Number(raw || 0);
+
+    totalCents += amountCents;
+    count += 1;
+
+    refunds.push({
+      id: refund.id,
+      paymentId: refund.paymentId,
+      createdAt: refund.createdAt,
+      updatedAt: refund.updatedAt,
+      status: refund.status,
+      amount: amountCents / 100,
+      currency: refund.amountMoney?.currency || "USD",
+      reason: refund.reason,
+      locationId: refund.locationId,
+    });
+  }
+
+  return { totalCents, count, refunds };
 }
 
-function parseWeekRange(weekStr) {
-  const day = DateTime.fromISO(weekStr, { zone: storeTimezone }).startOf("week");
-  if (!day.isValid) throw new Error("Invalid date");
-  const endDay = day.plus({ days: 6 });
-  return {
-    start: day.toUTC().toISO(),
-    end: endDay.endOf("day").toUTC().toISO(),
-    label: `${day.toISODate()} – ${endDay.toISODate()}`,
-  };
-}
+// --- REFUNDS ROUTES (same as old backend) ---
 
-function parseMonthRange(monthStr) {
-  const day = DateTime.fromISO(monthStr + "-01", { zone: storeTimezone }).startOf("month");
-  if (!day.isValid) throw new Error("Invalid month");
-  const endDay = day.endOf("month");
-  return {
-    start: day.toUTC().toISO(),
-    end: endDay.toUTC().toISO(),
-    label: day.toFormat("yyyy-LL"),
-  };
-}
+// DAILY REFUNDS: /api/refunds?date=YYYY-MM-DD
+app.get("/api/refunds", async (req, res) => {
+  const dateStr = req.query.date;
+  const timezone = STORE_TZ;
 
-function parseYearRange(yearStr) {
-  const yearInt = Number(yearStr);
-  if (!yearInt) throw new Error("Invalid year");
-  const start = DateTime.fromObject({ year: yearInt, month: 1, day: 1 }, { zone: storeTimezone });
-  const end = start.endOf("year");
-  return {
-    start: start.toUTC().toISO(),
-    end: end.toUTC().toISO(),
-    label: String(yearInt),
-  };
-}
-
-// Daily sales
-app.get("/api/sales", async (req, res) => {
-  try {
-    const { date } = req.query;
-    if (!date) {
-      return res.status(400).json({ error: "Missing date" });
-    }
-    const { start, end, label } = parseDayRange(date);
-    const locations = await getAllLocations();
-    const locationIds = locations.map((l) => l.id);
-
-    const summary = await aggregateSales(start, end, locationIds);
-    res.json({
-      date: label,
-      timezone: storeTimezone,
-      locations,
-      total: summary.total,
-      totalCents: summary.totalCents,
-      orderCount: summary.count,
-    });
-  } catch (err) {
-    console.error("Error /api/sales", err);
-    return res.status(500).json({ error: "Failed to fetch daily sales" });
+  if (!dateStr) {
+    return res.status(400).json({ error: "Missing date=YYYY-MM-DD" });
   }
-});
 
-
-app.get("/api/sales/insights/daily", async (req, res) => {
   try {
-    if (!openai) {
-      return res
-        .status(500)
-        .json({ error: "OPENAI_API_KEY not configured on server" });
+    const start = DateTime.fromISO(dateStr, { zone: timezone }).startOf("day");
+    const end = start.endOf("day");
+
+    if (!start.isValid) {
+      return res.status(400).json({ error: "Invalid date format" });
     }
 
-    const { date } = req.query;
-    if (!date) {
-      return res.status(400).json({ error: "Missing date" });
-    }
+    const beginTime = start.toUTC().toISO();
+    const endTime = end.toUTC().toISO();
 
-    // Reuse the same daily logic to get the data
-    const { start, end, label } = parseDayRange(date);
-    const locations = await getAllLocations();
-    const locationIds = locations.map((l) => l.id);
-    const summary = await aggregateSales(start, end, locationIds);
+    const locationsResponse = await client.locations.list();
+    const locations = locationsResponse.locations || [];
 
-    const payloadForAi = {
-      date: label,
-      timezone: storeTimezone,
-      total: summary.total,
-      orderCount: summary.count,
-      locations: locations.map((loc) => ({
-        id: loc.id,
-        name: loc.name,
-        city: loc.address?.locality,
-        openedAt: loc.createdAt,
-        status: loc.status,
-      })),
-    };
+    const perLocationResults = await Promise.all(
+      locations.map(async (loc) => {
+        const agg = await aggregateRefundsForLocation(
+          beginTime,
+          endTime,
+          loc.id
+        );
+        const total = agg.totalCents / 100;
 
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4.1-mini",
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are an assistant helping a Vietnamese coffee shop owner understand their Square daily sales.",
-        },
-        {
-          role: "user",
-          content:
-            "Here is the daily sales snapshot JSON. Give a concise, friendly analysis in 3–6 bullet points. Focus on total sales, order volume, average ticket, number of locations, and any obvious trends or suggestions:\n\n" +
-            JSON.stringify(payloadForAi, null, 2),
-        },
-      ],
-      max_tokens: 250,
-      temperature: 0.5,
-    });
+        return {
+          locationId: loc.id,
+          locationName: loc.name || loc.id,
+          total,
+          totalFormatted: total.toLocaleString("en-US", {
+            style: "currency",
+            currency: agg.refunds[0]?.currency || "USD",
+          }),
+          count: agg.count,
+          refunds: agg.refunds,
+        };
+      })
+    );
 
-    const insights =
-      completion.choices?.[0]?.message?.content ||
-      "I could not generate insights.";
-
-    res.json({ insights });
-  } catch (err) {
-    console.error("Error /api/sales/insights/daily", err);
-    res.status(500).json({ error: "Failed to generate AI insights" });
-  }
-});
-
-// Test endpoint hitting Square locations
-app.get("/api/test-square", async (req, res) => {
-  try {
-    const resp = await client.locations.list();
-    res.json({ ok: true, locations: resp.locations || [] });
-  } catch (err) {
-    console.error("TEST-SQUARE ERROR:", err);
-    res.status(500).json({ ok: false, error: err });
-  }
-});
-
-// Weekly
-app.get("/api/sales/weekly", async (req, res) => {
-  try {
-    const { week } = req.query;
-    if (!week) {
-      return res.status(400).json({ error: "Missing week" });
-    }
-    const { start, end, label } = parseWeekRange(week);
-    const locations = await getAllLocations();
-    const locationIds = locations.map((l) => l.id);
-    const summary = await aggregateSales(start, end, locationIds);
+    const grandRefundTotal = perLocationResults.reduce(
+      (sum, loc) => sum + (loc.total || 0),
+      0
+    );
+    const grandRefundCount = perLocationResults.reduce(
+      (sum, loc) => sum + (loc.count || 0),
+      0
+    );
 
     res.json({
-      week: label,
-      timezone: storeTimezone,
-      locations,
-      total: summary.total,
-      totalCents: summary.totalCents,
-      orderCount: summary.count,
+      date: dateStr,
+      timezone,
+      grandRefundTotal,
+      grandRefundTotalFormatted: grandRefundTotal.toLocaleString("en-US", {
+        style: "currency",
+        currency: perLocationResults[0]?.refunds[0]?.currency || "USD",
+      }),
+      grandRefundCount,
+      locationsCount: perLocationResults.length,
+      locations: perLocationResults,
     });
   } catch (err) {
-    console.error("Error /api/sales/weekly", err);
-    return res.status(500).json({ error: "Failed to fetch weekly sales" });
+    console.error("Error fetching refunds:", err);
+
+    if (err instanceof SquareError) {
+      return res.status(502).json({
+        error: "Square API error",
+        details: err.body,
+      });
+    }
+
+    res.status(500).json({
+      error: "Unexpected server error",
+    });
   }
 });
 
-// Monthly
-app.get("/api/sales/monthly", async (req, res) => {
+// WEEKLY REFUNDS: /api/refunds/weekly?week=YYYY-MM-DD
+app.get("/api/refunds/weekly", async (req, res) => {
+  const dateStr = req.query.week;
+  const timezone = STORE_TZ;
+
+  if (!dateStr) {
+    return res.status(400).json({ error: "Missing week=YYYY-MM-DD" });
+  }
+
   try {
-    const { month } = req.query;
-    if (!month) {
-      return res.status(400).json({ error: "Missing month" });
+    const target = DateTime.fromISO(dateStr, { zone: timezone });
+    if (!target.isValid) {
+      return res.status(400).json({ error: "Invalid week date" });
     }
-    const { start, end, label } = parseMonthRange(month);
-    const locations = await getAllLocations();
-    const locationIds = locations.map((l) => l.id);
-    const summary = await aggregateSales(start, end, locationIds);
+
+    const start = target.startOf("week");
+    const end = target.endOf("week");
+
+    const beginTime = start.toUTC().toISO();
+    const endTime = end.toUTC().toISO();
+
+    const locationsResponse = await client.locations.list();
+    const locations = locationsResponse.locations || [];
+
+    const perLocationResults = await Promise.all(
+      locations.map(async (loc) => {
+        const agg = await aggregateRefundsForLocation(
+          beginTime,
+          endTime,
+          loc.id
+        );
+        const total = agg.totalCents / 100;
+
+        return {
+          locationId: loc.id,
+          locationName: loc.name || loc.id,
+          total,
+          totalFormatted: total.toLocaleString("en-US", {
+            style: "currency",
+            currency: agg.refunds[0]?.currency || "USD",
+          }),
+          count: agg.count,
+          refunds: agg.refunds,
+        };
+      })
+    );
+
+    const grandRefundTotal = perLocationResults.reduce(
+      (sum, loc) => sum + (loc.total || 0),
+      0
+    );
+    const grandRefundCount = perLocationResults.reduce(
+      (sum, loc) => sum + (loc.count || 0),
+      0
+    );
 
     res.json({
-      month: label,
-      timezone: storeTimezone,
-      locations,
-      total: summary.total,
-      totalCents: summary.totalCents,
-      orderCount: summary.count,
+      range: { start: start.toISODate(), end: end.toISODate() },
+      type: "weekly",
+      grandRefundTotal,
+      grandRefundTotalFormatted: grandRefundTotal.toLocaleString("en-US", {
+        style: "currency",
+        currency: perLocationResults[0]?.refunds[0]?.currency || "USD",
+      }),
+      grandRefundCount,
+      locationsCount: perLocationResults.length,
+      locations: perLocationResults,
     });
   } catch (err) {
-    console.error("Error /api/sales/monthly", err);
-    return res.status(500).json({ error: "Failed to fetch monthly sales" });
+    console.error("Error fetching weekly refunds:", err);
+
+    if (err instanceof SquareError) {
+      return res.status(502).json({
+        error: "Square API error",
+        details: err.body,
+      });
+    }
+
+    res.status(500).json({
+      error: "Unexpected server error",
+    });
   }
 });
 
-// Yearly
-app.get("/api/sales/yearly", async (req, res) => {
+// MONTHLY REFUNDS: /api/refunds/monthly?month=YYYY-MM
+app.get("/api/refunds/monthly", async (req, res) => {
+  const monthStr = req.query.month;
+  const timezone = STORE_TZ;
+
+  if (!monthStr) {
+    return res.status(400).json({ error: "Missing month=YYYY-MM" });
+  }
+
   try {
-    const { year } = req.query;
-    if (!year) {
-      return res.status(400).json({ error: "Missing year" });
-    }
-    const { start, end, label } = parseYearRange(year);
-    const locations = await getAllLocations();
-    const locationIds = locations.map((l) => l.id);
-    const summary = await aggregateSales(start, end, locationIds);
+    const start = DateTime.fromISO(monthStr + "-01", {
+      zone: timezone,
+    }).startOf("month");
+    const end = start.endOf("month");
+
+    const beginTime = start.toUTC().toISO();
+    const endTime = end.toUTC().toISO();
+
+    const locationsResponse = await client.locations.list();
+    const locations = locationsResponse.locations || [];
+
+    const perLocationResults = await Promise.all(
+      locations.map(async (loc) => {
+        const agg = await aggregateRefundsForLocation(
+          beginTime,
+          endTime,
+          loc.id
+        );
+        const total = agg.totalCents / 100;
+
+        return {
+          locationId: loc.id,
+          locationName: loc.name || loc.id,
+          total,
+          totalFormatted: total.toLocaleString("en-US", {
+            style: "currency",
+            currency: agg.refunds[0]?.currency || "USD",
+          }),
+          count: agg.count,
+          refunds: agg.refunds,
+        };
+      })
+    );
+
+    const grandRefundTotal = perLocationResults.reduce(
+      (sum, loc) => sum + (loc.total || 0),
+      0
+    );
+    const grandRefundCount = perLocationResults.reduce(
+      (sum, loc) => sum + (loc.count || 0),
+      0
+    );
 
     res.json({
-      year: label,
-      timezone: storeTimezone,
-      locations,
-      total: summary.total,
-      totalCents: summary.totalCents,
-      orderCount: summary.count,
+      range: { start: start.toISODate(), end: end.toISODate() },
+      type: "monthly",
+      grandRefundTotal,
+      grandRefundTotalFormatted: grandRefundTotal.toLocaleString("en-US", {
+        style: "currency",
+        currency: perLocationResults[0]?.refunds[0]?.currency || "USD",
+      }),
+      grandRefundCount,
+      locationsCount: perLocationResults.length,
+      locations: perLocationResults,
     });
   } catch (err) {
-    console.error("Error /api/sales/yearly", err);
-    return res.status(500).json({ error: "Failed to fetch yearly sales" });
+    console.error("Error fetching monthly refunds:", err);
+
+    if (err instanceof SquareError) {
+      return res.status(502).json({
+        error: "Square API error",
+        details: err.body,
+      });
+    }
+
+    res.status(500).json({
+      error: "Unexpected server error",
+    });
+  }
+});
+
+// YEARLY REFUNDS: /api/refunds/yearly?year=YYYY
+app.get("/api/refunds/yearly", async (req, res) => {
+  const yearStr = req.query.year;
+  const timezone = STORE_TZ;
+
+  if (!yearStr) {
+    return res.status(400).json({ error: "Missing year=YYYY" });
+  }
+
+  try {
+    const start = DateTime.fromISO(yearStr + "-01-01", {
+      zone: timezone,
+    }).startOf("year");
+    const end = start.endOf("year");
+
+    const beginTime = start.toUTC().toISO();
+    const endTime = end.toUTC().toISO();
+
+    const locationsResponse = await client.locations.list();
+    const locations = locationsResponse.locations || [];
+
+    const perLocationResults = await Promise.all(
+      locations.map(async (loc) => {
+        const agg = await aggregateRefundsForLocation(
+          beginTime,
+          endTime,
+          loc.id
+        );
+        const total = agg.totalCents / 100;
+
+        return {
+          locationId: loc.id,
+          locationName: loc.name || loc.id,
+          total,
+          totalFormatted: total.toLocaleString("en-US", {
+            style: "currency",
+            currency: agg.refunds[0]?.currency || "USD",
+          }),
+          count: agg.count,
+          refunds: agg.refunds,
+        };
+      })
+    );
+
+    const grandRefundTotal = perLocationResults.reduce(
+      (sum, loc) => sum + (loc.total || 0),
+      0
+    );
+    const grandRefundCount = perLocationResults.reduce(
+      (sum, loc) => sum + (loc.count || 0),
+      0
+    );
+
+    res.json({
+      range: { start: start.toISODate(), end: end.toISODate() },
+      type: "yearly",
+      grandRefundTotal,
+      grandRefundTotalFormatted: grandRefundTotal.toLocaleString("en-US", {
+        style: "currency",
+        currency: perLocationResults[0]?.refunds[0]?.currency || "USD",
+      }),
+      grandRefundCount,
+      locationsCount: perLocationResults.length,
+      locations: perLocationResults,
+    });
+  } catch (err) {
+    console.error("Error fetching yearly refunds:", err);
+
+    if (err instanceof SquareError) {
+      return res.status(502).json({
+        error: "Square API error",
+        details: err.body,
+      });
+    }
+
+    res.status(500).json({
+      error: "Unexpected server error",
+    });
+  }
+});
+
+// Single-location daily sales debug
+app.get("/api/sales/location", async (req, res) => {
+  const locationId = req.query.locationId;
+  const dateStr = req.query.date;
+  const timezone = STORE_TZ;
+
+  if (!locationId) {
+    return res.status(400).json({ error: "Missing locationId" });
+  }
+  if (!dateStr) {
+    return res.status(400).json({ error: "Missing date=YYYY-MM-DD" });
+  }
+
+  try {
+    const start = DateTime.fromISO(dateStr, { zone: timezone }).startOf("day");
+    const end = start.endOf("day");
+
+    if (!start.isValid) {
+      return res.status(400).json({ error: "Invalid date format" });
+    }
+
+    const beginTime = start.toUTC().toISO();
+    const endTime = end.toUTC().toISO();
+
+    const agg = await aggregateForLocation(beginTime, endTime, locationId);
+    const total = agg.totalCents / 100;
+
+    return res.json({
+      locationId,
+      date: dateStr,
+      total,
+      totalFormatted: total.toLocaleString("en-US", {
+        style: "currency",
+        currency: agg.payments[0]?.currency || "USD",
+      }),
+      count: agg.count,
+      payments: agg.payments,
+    });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({
+      error: "Square API error",
+      details: err.message,
+    });
   }
 });
 
 // Debug locations
 app.get("/api/debug-locations", async (req, res) => {
   try {
-    const locations = await getAllLocations();
-    res.json({ locations });
-  } catch (err) {
-    console.error("Error /api/debug-locations", err);
-    return res.status(500).json({ error: "Failed to fetch locations" });
+    const now = DateTime.now().setZone(STORE_TZ);
+    const start = now.minus({ days: 30 }).startOf("day");
+    const end = now.endOf("day");
+
+    const beginTime = start.toUTC().toISO();
+    const endTime = end.toUTC().toISO();
+
+    const locResp = await client.locations.list();
+    const locations = locResp.locations || [];
+
+    const counts = {};
+    const paymentsIterable = await client.payments.list({ beginTime, endTime });
+
+    for await (const p of paymentsIterable) {
+      if (!p) continue;
+      const id = p.locationId || "UNKNOWN";
+      counts[id] = (counts[id] || 0) + 1;
+    }
+
+    res.json({ locations, counts });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "debug failed" });
   }
 });
 
-// Refund helpers
-async function aggregateRefunds(beginTime, endTime, locationIds) {
-  const refundsResponse = await client.refunds.list({
-    beginTime,
-    endTime,
-    locationId: locationIds[0] || undefined,
-  });
+// DAILY SALES: /api/sales?date=YYYY-MM-DD
+app.get("/api/sales", async (req, res) => {
+  const dateStr = req.query.date;
+  const timezone = STORE_TZ;
 
-  if (refundsResponse.errors) throw refundsResponse.errors;
-
-  const refunds = refundsResponse.refunds || [];
-
-  let totalCents = 0;
-  let count = 0;
-
-  for (const refund of refunds) {
-    if (refund.amountMoney && refund.amountMoney.amount != null) {
-      totalCents += Number(refund.amountMoney.amount);
-      count++;
-    }
+  if (!dateStr) {
+    return res.status(400).json({ error: "Missing date=YYYY-MM-DD" });
   }
 
-  return {
-    totalCents,
-    count,
-    total: totalCents / 100,
-  };
-}
-
-app.get("/api/refunds", async (req, res) => {
   try {
-    const { date } = req.query;
-    if (!date) {
-      return res.status(400).json({ error: "Missing date" });
+    const start = DateTime.fromISO(dateStr, { zone: timezone }).startOf("day");
+    const end = start.endOf("day");
+
+    if (!start.isValid) {
+      return res.status(400).json({ error: "Invalid date format" });
     }
-    const { start, end, label } = parseDayRange(date);
-    const locations = await getAllLocations();
-    const locationIds = locations.map((l) => l.id);
-    const summary = await aggregateRefunds(start, end, locationIds);
+
+    const beginTime = start.toUTC().toISO();
+    const endTime = end.toUTC().toISO();
+
+    const locationsResponse = await client.locations.list();
+    const locations = locationsResponse.locations || [];
+
+    const perLocationResults = await Promise.all(
+      locations.map(async (loc) => {
+        const agg = await aggregateForLocation(beginTime, endTime, loc.id);
+        const total = agg.totalCents / 100;
+
+        return {
+          locationId: loc.id,
+          locationName: loc.name || loc.id,
+          total,
+          totalFormatted: total.toLocaleString("en-US", {
+            style: "currency",
+            currency: agg.payments[0]?.currency || "USD",
+          }),
+          count: agg.count,
+          payments: agg.payments,
+        };
+      })
+    );
+
+    const grandTotal = perLocationResults.reduce(
+      (sum, loc) => sum + (loc.total || 0),
+      0
+    );
+    const grandCount = perLocationResults.reduce(
+      (sum, loc) => sum + (loc.count || 0),
+      0
+    );
 
     res.json({
-      date: label,
-      timezone: storeTimezone,
-      locations,
-      total: summary.total,
-      totalCents: summary.totalCents,
-      refundCount: summary.count,
+      date: dateStr,
+      timezone,
+      grandTotal,
+      grandTotalFormatted: grandTotal.toLocaleString("en-US", {
+        style: "currency",
+        currency: perLocationResults[0]?.payments[0]?.currency || "USD",
+      }),
+      grandCount,
+      locationsCount: perLocationResults.length,
+      locations: perLocationResults,
     });
   } catch (err) {
-    console.error("Error /api/refunds", err);
-    return res.status(500).json({ error: "Failed to fetch refunds" });
+    console.error("Error fetching sales:", err);
+
+    if (err instanceof SquareError) {
+      return res.status(502).json({
+        error: "Square API error",
+        details: err.body,
+      });
+    }
+
+    res.status(500).json({
+      error: "Unexpected server error",
+    });
   }
 });
 
-app.get("/api/refunds/weekly", async (req, res) => {
+// WEEKLY SALES SUMMARY
+app.get("/api/sales/weekly", async (req, res) => {
+  const dateStr = req.query.week;
+  const timezone = STORE_TZ;
+
+  if (!dateStr) {
+    return res.status(400).json({ error: "Missing week=YYYY-MM-DD" });
+  }
+
   try {
-    const { week } = req.query;
-    if (!week) {
-      return res.status(400).json({ error: "Missing week" });
+    const target = DateTime.fromISO(dateStr, { zone: timezone });
+    if (!target.isValid) {
+      return res.status(400).json({ error: "Invalid week date" });
     }
-    const { start, end, label } = parseWeekRange(week);
-    const locations = await getAllLocations();
-    const locationIds = locations.map((l) => l.id);
-    const summary = await aggregateRefunds(start, end, locationIds);
+
+    const start = target.startOf("week");
+    const end = target.endOf("week");
+
+    const beginTime = start.toUTC().toISO();
+    const endTime = end.toUTC().toISO();
+
+    const locationsResponse = await client.locations.list();
+    const locations = locationsResponse.locations || [];
+
+    const perLocationResults = await Promise.all(
+      locations.map(async (loc) => {
+        const agg = await aggregateForLocationSummary(beginTime, endTime, loc.id);
+        const total = agg.totalCents / 100;
+
+        return {
+          locationId: loc.id,
+          locationName: loc.name || loc.id,
+          total,
+          totalFormatted: total.toLocaleString("en-US", {
+            style: "currency",
+            currency: "USD",
+          }),
+          count: agg.count,
+        };
+      })
+    );
+
+    const grandTotal = perLocationResults.reduce(
+      (sum, loc) => sum + (loc.total || 0),
+      0
+    );
+    const grandCount = perLocationResults.reduce(
+      (sum, loc) => sum + (loc.count || 0),
+      0
+    );
 
     res.json({
-      week: label,
-      timezone: storeTimezone,
-      locations,
-      total: summary.total,
-      totalCents: summary.totalCents,
-      refundCount: summary.count,
+      range: { start: start.toISODate(), end: end.toISODate() },
+      type: "weekly",
+      grandTotal,
+      grandTotalFormatted: grandTotal.toLocaleString("en-US", {
+        style: "currency",
+        currency: "USD",
+      }),
+      grandCount,
+      locations: perLocationResults,
     });
   } catch (err) {
-    console.error("Error /api/refunds/weekly", err);
-    return res.status(500).json({ error: "Failed to fetch refunds" });
+    console.error("Weekly report failed:", err);
+    res
+      .status(500)
+      .json({ error: "Weekly report failed", details: err.message });
   }
 });
 
-app.get("/api/refunds/monthly", async (req, res) => {
+// MONTHLY SALES SUMMARY
+app.get("/api/sales/monthly", async (req, res) => {
+  const monthStr = req.query.month;
+  const timezone = STORE_TZ;
+
+  if (!monthStr) {
+    return res.status(400).json({ error: "Missing month=YYYY-MM" });
+  }
+
   try {
-    const { month } = req.query;
-    if (!month) {
-      return res.status(400).json({ error: "Missing month" });
-    }
-    const { start, end, label } = parseMonthRange(month);
-    const locations = await getAllLocations();
-    const locationIds = locations.map((l) => l.id);
-    const summary = await aggregateRefunds(start, end, locationIds);
+    const start = DateTime.fromISO(monthStr + "-01", {
+      zone: timezone,
+    }).startOf("month");
+    const end = start.endOf("month");
+
+    const beginTime = start.toUTC().toISO();
+    const endTime = end.toUTC().toISO();
+
+    const locationsResponse = await client.locations.list();
+    const locations = locationsResponse.locations || [];
+
+    const perLocationResults = await Promise.all(
+      locations.map(async (loc) => {
+        const agg = await aggregateForLocationSummary(beginTime, endTime, loc.id);
+        const total = agg.totalCents / 100;
+
+        return {
+          locationId: loc.id,
+          locationName: loc.name || loc.id,
+          total,
+          totalFormatted: total.toLocaleString("en-US", {
+            style: "currency",
+            currency: "USD",
+          }),
+          count: agg.count,
+        };
+      })
+    );
+
+    const grandTotal = perLocationResults.reduce(
+      (sum, loc) => sum + (loc.total || 0),
+      0
+    );
+    const grandCount = perLocationResults.reduce(
+      (sum, loc) => sum + (loc.count || 0),
+      0
+    );
 
     res.json({
-      month: label,
-      timezone: storeTimezone,
-      locations,
-      total: summary.total,
-      totalCents: summary.totalCents,
-      refundCount: summary.count,
+      range: { start: start.toISODate(), end: end.toISODate() },
+      type: "monthly",
+      grandTotal,
+      grandTotalFormatted: grandTotal.toLocaleString("en-US", {
+        style: "currency",
+        currency: "USD",
+      }),
+      grandCount,
+      locations: perLocationResults,
     });
   } catch (err) {
-    console.error("Error /api/refunds/monthly", err);
-    return res.status(500).json({ error: "Failed to fetch refunds" });
+    console.error("Monthly report failed:", err);
+    res
+      .status(500)
+      .json({ error: "Monthly report failed", details: err.message });
   }
 });
 
-app.get("/api/refunds/yearly", async (req, res) => {
+// YEARLY SALES SUMMARY
+app.get("/api/sales/yearly", async (req, res) => {
+  const yearStr = req.query.year;
+  const timezone = STORE_TZ;
+
+  if (!yearStr) {
+    return res.status(400).json({ error: "Missing year=YYYY" });
+  }
+
   try {
-    const { year } = req.query;
-    if (!year) {
-      return res.status(400).json({ error: "Missing year" });
-    }
-    const { start, end, label } = parseYearRange(year);
-    const locations = await getAllLocations();
-    const locationIds = locations.map((l) => l.id);
-    const summary = await aggregateRefunds(start, end, locationIds);
+    const start = DateTime.fromISO(yearStr + "-01-01", {
+      zone: timezone,
+    }).startOf("year");
+    const end = start.endOf("year");
+
+    const beginTime = start.toUTC().toISO();
+    const endTime = end.toUTC().toISO();
+
+    const locationsResponse = await client.locations.list();
+    const locations = locationsResponse.locations || [];
+
+    const perLocationResults = await Promise.all(
+      locations.map(async (loc) => {
+        const agg = await aggregateForLocationSummary(beginTime, endTime, loc.id);
+        const total = agg.totalCents / 100;
+
+        return {
+          locationId: loc.id,
+          locationName: loc.name || loc.id,
+          total,
+          totalFormatted: total.toLocaleString("en-US", {
+            style: "currency",
+            currency: "USD",
+          }),
+          count: agg.count,
+        };
+      })
+    );
+
+    const grandTotal = perLocationResults.reduce(
+      (sum, loc) => sum + (loc.total || 0),
+      0
+    );
+    const grandCount = perLocationResults.reduce(
+      (sum, loc) => sum + (loc.count || 0),
+      0
+    );
 
     res.json({
-      year: label,
-      timezone: storeTimezone,
-      locations,
-      total: summary.total,
-      totalCents: summary.totalCents,
-      refundCount: summary.count,
+      range: { start: start.toISODate(), end: end.toISODate() },
+      type: "yearly",
+      grandTotal,
+      grandTotalFormatted: grandTotal.toLocaleString("en-US", {
+        style: "currency",
+        currency: "USD",
+      }),
+      grandCount,
+      locations: perLocationResults,
     });
   } catch (err) {
-    console.error("Error /api/refunds/yearly", err);
-    return res.status(500).json({ error: "Failed to fetch refunds" });
+    console.error("Yearly report failed:", err);
+    res
+      .status(500)
+      .json({ error: "Yearly report failed", details: err.message });
   }
+});
+
+// Health check
+app.get("/", (req, res) => {
+  res.json({ ok: true, message: "Square Reports backend running" });
 });
 
 // Global error handler
@@ -494,6 +884,7 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: "Server error" });
 });
 
+const PORT = process.env.PORT || 4000;
 app.listen(PORT, () => {
   console.log(`Backend listening on port ${PORT}`);
 });

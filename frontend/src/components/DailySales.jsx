@@ -20,7 +20,7 @@ function DailySales() {
         headers: {
           'Content-Type': 'application/json',
           // If you use BASIC_AUTH_PASSCODE in backend, uncomment and fill:
-          // 'x-passcode': 'mysecret',
+          'x-passcode': '7238',
         },
       })
 

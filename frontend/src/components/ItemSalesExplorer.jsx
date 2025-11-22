@@ -8,6 +8,7 @@ const PERIODS = [
   { id: "daily", label: "Daily", endpoint: "/api/items/daily", paramKey: "date" },
   { id: "weekly", label: "Weekly", endpoint: "/api/items/weekly", paramKey: "week" },
   { id: "monthly", label: "Monthly", endpoint: "/api/items/monthly", paramKey: "month" },
+  { id: "yearly", label: "Yearly", endpoint: "/api/items/yearly", paramKey: "year" },
 ];
 
 function formatDateLabel(data) {
@@ -15,6 +16,9 @@ function formatDateLabel(data) {
   if (data.type === "daily") return data.date;
   if (data.type === "weekly" || data.type === "monthly") {
     return `${data.range.start} → ${data.range.end}`;
+  }
+  if (data.type === "yearly") {
+    return `${data.year} (${data.range.start} → ${data.range.end})`;
   }
   return "";
 }
@@ -39,11 +43,12 @@ function ItemSalesExplorer() {
 
     const rawDate = customDate || date;
 
-    let paramValue = rawDate;
+   let paramValue = rawDate;
 
-    // For monthly, param must be YYYY-MM
     if (period === "monthly") {
-      paramValue = rawDate.slice(0, 7); // "2025-11"
+      paramValue = rawDate.slice(0, 7); // "YYYY-MM"
+    } else if (period === "yearly") {
+      paramValue = rawDate.slice(0, 4); // "YYYY"
     }
 
     setLoading(true);
@@ -77,11 +82,26 @@ function ItemSalesExplorer() {
   }
 
   // Handle date change from picker
-  function handleDateChange(e) {
-    const newVal = e.target.value;
-    setDate(newVal);
-    fetchData(newVal);
+function handleDateChange(e) {
+  const val = e.target.value;
+
+  if (period === "yearly") {
+    // store as YYYY-01-01 so state is still a full date
+    const safeYear = val || new Date().getFullYear().toString();
+    const full = `${safeYear}-01-01`;
+    setDate(full);
+    fetchData(full);
+  } else if (period === "monthly") {
+    // browser gives YYYY-MM; convert to YYYY-MM-01 for state
+    const full = `${val}-01`;
+    setDate(full);
+    fetchData(full);
+  } else {
+    setDate(val);
+    fetchData(val);
   }
+}
+
 
   const dateLabel = formatDateLabel(data);
   const grandTotal = data?.grandTotal || 0;
@@ -134,27 +154,42 @@ function ItemSalesExplorer() {
           ))}
         </div>
 
-        {/* Date / Month picker */}
-        <label style={{ fontSize: 13 }}>
-          {period === "monthly" ? "Month:" : "Date:"}&nbsp;
-          <input
-            type={period === "monthly" ? "month" : "date"}
-            value={
-              period === "monthly"
-                ? (date.length >= 7 ? date.slice(0, 7) : date)
-                : date
-            }
-            onChange={handleDateChange}
-            style={{
-              background: "#020617",
-              color: "#e5e7eb",
-              borderRadius: 6,
-              border: "1px solid #374151",
-              padding: "6px 8px",
-              fontSize: 13,
-            }}
-          />
-        </label>
+       <label style={{ fontSize: 13 }}>
+  {period === "monthly"
+    ? "Month:"
+    : period === "yearly"
+    ? "Year:"
+    : "Date:"}
+  &nbsp;
+  <input
+    type={
+      period === "monthly"
+        ? "month"
+        : period === "yearly"
+        ? "number"
+        : "date"
+    }
+    min={period === "yearly" ? "2020" : undefined}
+    max={period === "yearly" ? "2100" : undefined}
+    value={
+      period === "monthly"
+        ? (date.length >= 7 ? date.slice(0, 7) : date)
+        : period === "yearly"
+        ? date.slice(0, 4)
+        : date
+    }
+    onChange={handleDateChange}
+    style={{
+      background: "#020617",
+      color: "#e5e7eb",
+      borderRadius: 6,
+      border: "1px solid #374151",
+      padding: "6px 8px",
+      fontSize: 13,
+    }}
+  />
+</label>
+
 
         <button
           onClick={() => fetchData()}

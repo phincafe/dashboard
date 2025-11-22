@@ -13,46 +13,88 @@ function formatCurrency(v) {
   });
 }
 
+function percentChange(current, previous) {
+  if (previous === 0 || previous == null) return null;
+  return ((current - previous) / previous) * 100;
+}
+
 function WeeklySales() {
-  const [anchorDate, setAnchorDate] = useState(todayISO); // week=YYYY-MM-DD
+  // week anchor = any date in the week
+  const [weekDate, setWeekDate] = useState(todayISO);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [data, setData] = useState(null);
+
+  const [currentWeek, setCurrentWeek] = useState(null);
+  const [prevWeek, setPrevWeek] = useState(null);
 
   async function fetchWeekly() {
     setLoading(true);
     setError("");
+    setCurrentWeek(null);
+    setPrevWeek(null);
+
     try {
-      const url = new URL("/api/sales/weekly", API_BASE_URL);
-      url.searchParams.set("week", anchorDate);
+      // current week
+      const curUrl = new URL("/api/sales/weekly", API_BASE_URL);
+      curUrl.searchParams.set("week", weekDate);
 
-      const res = await fetch(url.toString(), {
-        headers: {
-          "Content-Type": "application/json",
-          // "x-passcode": "your-passcode-here",
-        },
+      const curRes = await fetch(curUrl.toString(), {
+        headers: { "Content-Type": "application/json" },
       });
-
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
+      if (!curRes.ok) {
+        const body = await curRes.json().catch(() => ({}));
         throw new Error(body.error || "Failed to fetch weekly sales");
       }
+      const curJson = await curRes.json();
+      setCurrentWeek(curJson);
 
-      const json = await res.json();
-      setData(json);
+      // previous week = chosen day - 7 days
+      const d = new Date(weekDate);
+      d.setDate(d.getDate() - 7);
+      const prevWeekISO = d.toISOString().slice(0, 10);
+
+      const prevUrl = new URL("/api/sales/weekly", API_BASE_URL);
+      prevUrl.searchParams.set("week", prevWeekISO);
+
+      const prevRes = await fetch(prevUrl.toString(), {
+        headers: { "Content-Type": "application/json" },
+      });
+
+      if (prevRes.ok) {
+        const prevJson = await prevRes.json();
+        setPrevWeek(prevJson);
+      } else {
+        setPrevWeek(null);
+      }
     } catch (err) {
+      console.error(err);
       setError(err.message || "Error loading weekly sales");
-      setData(null);
+      setCurrentWeek(null);
+      setPrevWeek(null);
     } finally {
       setLoading(false);
     }
   }
 
-  const locations = data?.locations || [];
-  const avgOrderChain =
-    data && data.grandTotal && data.grandCount
-      ? data.grandTotal / data.grandCount
+  const locations = currentWeek?.locations || [];
+  const avgOrder =
+    currentWeek && currentWeek.grandTotal && currentWeek.grandCount
+      ? currentWeek.grandTotal / currentWeek.grandCount
       : null;
+
+  const prevTotal = prevWeek?.grandTotal ?? null;
+  const pct =
+    currentWeek?.grandTotal != null && prevTotal != null
+      ? percentChange(currentWeek.grandTotal, prevTotal)
+      : null;
+  const isUp = pct != null && pct >= 0;
+
+  const currentRangeLabel = currentWeek
+    ? `${currentWeek.range.start} → ${currentWeek.range.end}`
+    : null;
+  const prevRangeLabel = prevWeek
+    ? `${prevWeek.range.start} → ${prevWeek.range.end}`
+    : null;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -69,8 +111,8 @@ function WeeklySales() {
           Any date in week:&nbsp;
           <input
             type="date"
-            value={anchorDate}
-            onChange={(e) => setAnchorDate(e.target.value)}
+            value={weekDate}
+            onChange={(e) => setWeekDate(e.target.value)}
             style={{
               background: "#020617",
               color: "#e5e7eb",
@@ -100,7 +142,7 @@ function WeeklySales() {
         </button>
       </div>
 
-      {/* Errors */}
+      {/* Error */}
       {error && (
         <div
           style={{
@@ -117,16 +159,17 @@ function WeeklySales() {
       )}
 
       {/* Data */}
-      {data && (
+      {currentWeek && (
         <>
           {/* Summary */}
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))",
+              gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
               gap: 12,
             }}
           >
+            {/* Range card */}
             <div
               style={{
                 padding: 12,
@@ -137,14 +180,15 @@ function WeeklySales() {
               }}
             >
               <div style={{ fontSize: 12, color: "#9ca3af" }}>Week range</div>
-              <div style={{ fontSize: 16, fontWeight: 600 }}>
-                {data.range?.start} → {data.range?.end}
+              <div style={{ fontSize: 15, fontWeight: 600 }}>
+                {currentRangeLabel}
               </div>
               <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
-                Type: {data.type}
+                TZ: {currentWeek.timezone}
               </div>
             </div>
 
+            {/* Total */}
             <div
               style={{
                 padding: 12,
@@ -155,13 +199,14 @@ function WeeklySales() {
             >
               <div style={{ fontSize: 12, color: "#9ca3af" }}>Total sales</div>
               <div style={{ fontSize: 20, fontWeight: 700 }}>
-                {data.grandTotalFormatted}
+                {currentWeek.grandTotalFormatted}
               </div>
               <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
                 Across all locations
               </div>
             </div>
 
+            {/* Orders */}
             <div
               style={{
                 padding: 12,
@@ -172,15 +217,77 @@ function WeeklySales() {
             >
               <div style={{ fontSize: 12, color: "#9ca3af" }}>Orders</div>
               <div style={{ fontSize: 20, fontWeight: 700 }}>
-                {data.grandCount ?? "-"}
+                {currentWeek.grandCount ?? "-"}
               </div>
               <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
-                Avg ticket: {formatCurrency(avgOrderChain)}
+                Avg ticket: {formatCurrency(avgOrder)}
               </div>
+            </div>
+
+            {/* Locations */}
+            <div
+              style={{
+                padding: 12,
+                borderRadius: 12,
+                border: "1px solid #6b21a8",
+                background: "rgba(147,51,234,0.12)",
+              }}
+            >
+              <div style={{ fontSize: 12, color: "#9ca3af" }}>Locations</div>
+              <div style={{ fontSize: 20, fontWeight: 700 }}>
+                {currentWeek.locationsCount ?? locations.length}
+              </div>
+              <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
+                With at least 1 payment
+              </div>
+            </div>
+
+            {/* Comparison card */}
+            <div
+              style={{
+                padding: 12,
+                borderRadius: 12,
+                border: "1px solid #4b5563",
+                background: "rgba(75,85,99,0.16)",
+              }}
+            >
+              <div style={{ fontSize: 12, color: "#9ca3af" }}>
+                Vs previous week
+              </div>
+              {prevTotal == null ? (
+                <div style={{ fontSize: 12, color: "#6b7280", marginTop: 4 }}>
+                  No data for previous week.
+                </div>
+              ) : (
+                <>
+                  <div
+                    style={{
+                      fontSize: 14,
+                      marginTop: 4,
+                      color: "#e5e7eb",
+                    }}
+                  >
+                    {formatCurrency(prevTotal)} from {prevRangeLabel}
+                  </div>
+                  {pct != null && (
+                    <div
+                      style={{
+                        marginTop: 4,
+                        fontSize: 13,
+                        fontWeight: 600,
+                        color: isUp ? "#4ade80" : "#fb7185",
+                      }}
+                    >
+                      {isUp ? "▲" : "▼"}{" "}
+                      {Math.abs(pct).toFixed(1)}% vs previous week
+                    </div>
+                  )}
+                </>
+              )}
             </div>
           </div>
 
-          {/* Locations */}
+          {/* Per-location */}
           <div style={{ marginTop: 16 }}>
             <div
               style={{
@@ -189,7 +296,7 @@ function WeeklySales() {
                 marginBottom: 6,
               }}
             >
-              Weekly totals by location
+              Per-location weekly performance
             </div>
 
             <div
@@ -215,12 +322,21 @@ function WeeklySales() {
                   >
                     <div
                       style={{
-                        fontSize: 14,
-                        fontWeight: 600,
-                        color: "#e5e7eb",
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        gap: 8,
                       }}
                     >
-                      {loc.locationName}
+                      <div
+                        style={{
+                          fontSize: 14,
+                          fontWeight: 600,
+                          color: "#e5e7eb",
+                        }}
+                      >
+                        {loc.locationName}
+                      </div>
                     </div>
 
                     <div
@@ -239,7 +355,9 @@ function WeeklySales() {
                       </div>
                       <div>
                         <div style={{ color: "#9ca3af" }}>Orders</div>
-                        <div style={{ fontWeight: 600 }}>{loc.count}</div>
+                        <div style={{ fontWeight: 600 }}>
+                          {loc.count ?? "-"}
+                        </div>
                       </div>
                       <div>
                         <div style={{ color: "#9ca3af" }}>Avg ticket</div>

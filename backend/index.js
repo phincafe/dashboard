@@ -8,21 +8,39 @@ import { registerItemRoutes } from "./itemsRoutes.js";
 
 dotenv.config();
 
-// Decide environment from SQUARE_ENVIRONMENT (production / sandbox)
-const isProd =
-  (process.env.SQUARE_ENVIRONMENT || "").toLowerCase() === "production";
-
-console.log("SQUARE_ENVIRONMENT =", process.env.SQUARE_ENVIRONMENT);
-console.log("Using Square env:", isProd ? "PRODUCTION" : "SANDBOX");
-console.log("Has SQUARE_ACCESS_TOKEN?", !!process.env.SQUARE_ACCESS_TOKEN);
-
-// --- Square client ---
-const client = new SquareClient({
-  accessToken: process.env.SQUARE_ACCESS_TOKEN, // ✅ correct key
-  environment: isProd
+// --- Square client (v43.2.0) ---
+const rawEnv = (process.env.SQUARE_ENVIRONMENT || "sandbox").toLowerCase();
+const environment =
+  rawEnv === "production"
     ? SquareEnvironment.Production
-    : SquareEnvironment.Sandbox,
+    : SquareEnvironment.Sandbox;
+
+const token = process.env.SQUARE_ACCESS_TOKEN || "";
+
+console.log("SQUARE_ENVIRONMENT =", rawEnv);
+console.log(
+  "Using Square env:",
+  environment === SquareEnvironment.Production ? "PRODUCTION" : "SANDBOX"
+);
+console.log(
+  "SQUARE_ACCESS_TOKEN present?",
+  token ? "YES, length=" + token.length : "NO"
+);
+console.log(
+  "SQUARE_ACCESS_TOKEN prefix:",
+  token ? token.slice(0, 6) + "..." : "MISSING"
+);
+
+if (!token) {
+  throw new Error("Missing SQUARE_ACCESS_TOKEN env var");
+}
+
+const client = new SquareClient({
+  // ✅ for square@43.2.0 this MUST be accessToken
+  accessToken: token,
+  environment,
 });
+
 
 
 // --- Express app ---

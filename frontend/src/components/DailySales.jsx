@@ -13,64 +13,110 @@ function formatCurrency(v) {
   });
 }
 
-function percentChange(current, previous) {
-  if (previous === 0 || previous == null) return null;
-  return ((current - previous) / previous) * 100;
+function computeChange(current, prev) {
+  if (!prev || typeof current !== "number" || typeof prev !== "number") {
+    return null;
+  }
+  if (prev === 0) return null;
+
+  const diff = current - prev;
+  const pct = (diff / prev) * 100;
+  return { diff, pct };
+}
+
+function formatChangeLabel(label, change) {
+  if (!change || change.pct == null) return `${label}: N/A`;
+
+  const sign = change.pct >= 0 ? "+" : "";
+  const color =
+    change.pct > 0 ? "#22c55e" : change.pct < 0 ? "#ef4444" : "#9ca3af";
+
+  return (
+    <div style={{ fontSize: 11, marginTop: 2, color }}>
+      {label}: {sign}
+      {change.pct.toFixed(1)}% ({change.diff >= 0 ? "+" : ""}
+      {formatCurrency(Math.abs(change.diff))})
+    </div>
+  );
 }
 
 function DailySales() {
   const [date, setDate] = useState(todayISO);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [data, setData] = useState(null);
 
-  const [data, setData] = useState(null);           // current day
-  const [prevWeekData, setPrevWeekData] = useState(null); // same day last week
+  // { lastWeek, lastMonth, lastYear }
+  const [comparisons, setComparisons] = useState(null);
+
+  async function fetchOneDay(dateISO) {
+    const url = new URL("/api/sales", API_BASE_URL);
+    url.searchParams.set("date", dateISO);
+
+    const res = await fetch(url.toString(), {
+      headers: {
+        "Content-Type": "application/json",
+        // If you set BASIC_AUTH_PASSCODE in backend, add it here:
+        // "x-passcode": "your-passcode-here",
+      },
+    });
+
+    if (!res.ok) {
+      // For comparison fetches we just return null on error
+      return null;
+    }
+    return res.json();
+  }
 
   async function fetchDaily() {
     setLoading(true);
     setError("");
-    setData(null);
-    setPrevWeekData(null);
+    setComparisons(null);
 
     try {
-      // current day
-      const currentUrl = new URL("/api/sales", API_BASE_URL);
-      currentUrl.searchParams.set("date", date);
-
-      const currentRes = await fetch(currentUrl.toString(), {
-        headers: { "Content-Type": "application/json" },
-      });
-      if (!currentRes.ok) {
-        const body = await currentRes.json().catch(() => ({}));
-        throw new Error(body.error || "Failed to fetch daily sales");
+      // 1) Fetch current day
+      const currentRes = await fetchOneDay(date);
+      if (!currentRes) {
+        throw new Error("Failed to fetch daily sales");
       }
-      const currentJson = await currentRes.json();
-      setData(currentJson);
+      setData(currentRes);
 
-      // same weekday last week = date - 7 days
-      const d = new Date(date);
-      d.setDate(d.getDate() - 7);
-      const lastWeekISO = d.toISOString().slice(0, 10);
-
-      const prevUrl = new URL("/api/sales", API_BASE_URL);
-      prevUrl.searchParams.set("date", lastWeekISO);
-
-      const prevRes = await fetch(prevUrl.toString(), {
-        headers: { "Content-Type": "application/json" },
-      });
-
-      if (prevRes.ok) {
-        const prevJson = await prevRes.json();
-        setPrevWeekData(prevJson);
-      } else {
-        // don't hard-fail if last week is missing
-        setPrevWeekData(null);
+      // 2) Build comparison dates
+      const currentDateObj = new Date(date);
+      if (Number.isNaN(currentDateObj.getTime())) {
+        throw new Error("Invalid date");
       }
+
+      const prevWeek = new Date(currentDateObj);
+      prevWeek.setDate(prevWeek.getDate() - 7);
+
+      const prevMonth = new Date(currentDateObj);
+      prevMonth.setMonth(prevMonth.getMonth() - 1);
+
+      const prevYear = new Date(currentDateObj);
+      prevYear.setFullYear(prevYear.getFullYear() - 1);
+
+      const prevWeekISO = prevWeek.toISOString().slice(0, 10);
+      const prevMonthISO = prevMonth.toISOString().slice(0, 10);
+      const prevYearISO = prevYear.toISOString().slice(0, 10);
+
+      // 3) Fetch comparisons in parallel
+      const [lastWeek, lastMonth, lastYear] = await Promise.all([
+        fetchOneDay(prevWeekISO),
+        fetchOneDay(prevMonthISO),
+        fetchOneDay(prevYearISO),
+      ]);
+
+      setComparisons({
+        lastWeek,
+        lastMonth,
+        lastYear,
+      });
     } catch (err) {
       console.error(err);
       setError(err.message || "Error loading daily sales");
       setData(null);
-      setPrevWeekData(null);
+      setComparisons(null);
     } finally {
       setLoading(false);
     }
@@ -82,14 +128,19 @@ function DailySales() {
       ? data.grandTotal / data.grandCount
       : null;
 
-  const prevTotal = prevWeekData?.grandTotal ?? null;
-  const prevDateLabel = prevWeekData?.date ?? null;
-
-  const pct = data?.grandTotal != null && prevTotal != null
-    ? percentChange(data.grandTotal, prevTotal)
-    : null;
-
-  const isUp = pct != null && pct >= 0;
+  // Overall comparison (all locations)
+  const overallLastWeekChange = computeChange(
+    data?.grandTotal,
+    comparisons?.lastWeek?.grandTotal
+  );
+  const overallLastMonthChange = computeChange(
+    data?.grandTotal,
+    comparisons?.lastMonth?.grandTotal
+  );
+  const overallLastYearChange = computeChange(
+    data?.grandTotal,
+    comparisons?.lastYear?.grandTotal
+  );
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -133,7 +184,7 @@ function DailySales() {
             opacity: loading ? 0.7 : 1,
           }}
         >
-          {loading ? "Loading…" : "Load daily sales"}
+          {loading ? "Loading…" : "Load daily sales + compare"}
         </button>
       </div>
 
@@ -164,7 +215,6 @@ function DailySales() {
               gap: 12,
             }}
           >
-            {/* Date */}
             <div
               style={{
                 padding: 12,
@@ -181,7 +231,6 @@ function DailySales() {
               </div>
             </div>
 
-            {/* Total sales */}
             <div
               style={{
                 padding: 12,
@@ -190,18 +239,24 @@ function DailySales() {
                 background: "rgba(22,163,74,0.12)",
               }}
             >
-              <div style={{ fontSize: 12, color: "#9ca3af" }}>
-                Total sales
-              </div>
+              <div style={{ fontSize: 12, color: "#9ca3af" }}>Total sales</div>
               <div style={{ fontSize: 20, fontWeight: 700 }}>
                 {data.grandTotalFormatted}
               </div>
               <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
                 Across all locations
               </div>
+
+              {/* Overall comparisons */}
+              {comparisons && (
+                <div style={{ marginTop: 6 }}>
+                  {formatChangeLabel("vs same day last week", overallLastWeekChange)}
+                  {formatChangeLabel("vs same date last month", overallLastMonthChange)}
+                  {formatChangeLabel("vs same date last year", overallLastYearChange)}
+                </div>
+              )}
             </div>
 
-            {/* Orders */}
             <div
               style={{
                 padding: 12,
@@ -219,7 +274,6 @@ function DailySales() {
               </div>
             </div>
 
-            {/* Locations */}
             <div
               style={{
                 padding: 12,
@@ -236,50 +290,6 @@ function DailySales() {
                 With at least 1 payment
               </div>
             </div>
-
-            {/* Comparison vs same day last week */}
-            <div
-              style={{
-                padding: 12,
-                borderRadius: 12,
-                border: "1px solid #4b5563",
-                background: "rgba(75,85,99,0.16)",
-              }}
-            >
-              <div style={{ fontSize: 12, color: "#9ca3af" }}>
-                Vs same day last week
-              </div>
-              {prevTotal == null ? (
-                <div style={{ fontSize: 12, color: "#6b7280", marginTop: 4 }}>
-                  No data for last week&apos;s same day.
-                </div>
-              ) : (
-                <>
-                  <div
-                    style={{
-                      fontSize: 14,
-                      marginTop: 4,
-                      color: "#e5e7eb",
-                    }}
-                  >
-                    {formatCurrency(prevTotal)} on {prevDateLabel}
-                  </div>
-                  {pct != null && (
-                    <div
-                      style={{
-                        marginTop: 4,
-                        fontSize: 13,
-                        fontWeight: 600,
-                        color: isUp ? "#4ade80" : "#fb7185",
-                      }}
-                    >
-                      {isUp ? "▲" : "▼"}{" "}
-                      {Math.abs(pct).toFixed(1)}% vs last week
-                    </div>
-                  )}
-                </>
-              )}
-            </div>
           </div>
 
           {/* Locations table/cards */}
@@ -291,7 +301,7 @@ function DailySales() {
                 marginBottom: 6,
               }}
             >
-              Per-location daily performance
+              Per-location daily performance (with comparisons)
             </div>
 
             <div
@@ -304,6 +314,31 @@ function DailySales() {
               {locations.map((loc) => {
                 const avg =
                   loc.total && loc.count ? loc.total / loc.count : null;
+
+                // Find same-location entries in comparison reports
+                const lastWeekLoc =
+                  comparisons?.lastWeek?.locations?.find(
+                    (l) => l.locationId === loc.locationId
+                  ) || null;
+                const lastMonthLoc =
+                  comparisons?.lastMonth?.locations?.find(
+                    (l) => l.locationId === loc.locationId
+                  ) || null;
+                const lastYearLoc =
+                  comparisons?.lastYear?.locations?.find(
+                    (l) => l.locationId === loc.locationId
+                  ) || null;
+
+                const locLastWeekChange = lastWeekLoc
+                  ? computeChange(loc.total, lastWeekLoc.total)
+                  : null;
+                const locLastMonthChange = lastMonthLoc
+                  ? computeChange(loc.total, lastMonthLoc.total)
+                  : null;
+                const locLastYearChange = lastYearLoc
+                  ? computeChange(loc.total, lastYearLoc.total)
+                  : null;
+
                 return (
                   <div
                     key={loc.locationId}
@@ -359,6 +394,24 @@ function DailySales() {
                         </div>
                       </div>
                     </div>
+
+                    {/* Per-location comparison rows */}
+                    {comparisons && (
+                      <div style={{ marginTop: 6 }}>
+                        {formatChangeLabel(
+                          "vs same day last week",
+                          locLastWeekChange
+                        )}
+                        {formatChangeLabel(
+                          "vs same date last month",
+                          locLastMonthChange
+                        )}
+                        {formatChangeLabel(
+                          "vs same date last year",
+                          locLastYearChange
+                        )}
+                      </div>
+                    )}
                   </div>
                 );
               })}

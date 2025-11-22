@@ -50,7 +50,7 @@ const squareEnvironment =
     : SquareEnvironment.Sandbox;
 
 const client = new SquareClient({
-  accessToken: process.env.SQUARE_ACCESS_TOKEN,
+  token: process.env.SQUARE_ACCESS_TOKEN,
   environment: squareEnvironment,
 });
 

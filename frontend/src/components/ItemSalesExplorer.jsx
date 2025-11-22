@@ -1,4 +1,3 @@
-// src/components/ItemSalesExplorer.jsx
 import React, { useState, useEffect } from "react";
 import { API_BASE_URL } from "../App";
 
@@ -8,7 +7,7 @@ const PERIODS = [
   { id: "daily", label: "Daily", endpoint: "/api/items/daily", paramKey: "date" },
   { id: "weekly", label: "Weekly", endpoint: "/api/items/weekly", paramKey: "week" },
   { id: "monthly", label: "Monthly", endpoint: "/api/items/monthly", paramKey: "month" },
-  { id: "yearly", label: "Yearly", endpoint: "/api/items/yearly", paramKey: "year" },
+  { id: "yearly", label: "Yearly", endpoint: "/api/items/yearly", paramKey: "year" }, // backend yearly still TODO
 ];
 
 function formatDateLabel(data) {
@@ -18,25 +17,43 @@ function formatDateLabel(data) {
     return `${data.range.start} → ${data.range.end}`;
   }
   if (data.type === "yearly") {
-    return `${data.year} (${data.range.start} → ${data.range.end})`;
+    return `${data.year || ""} (${data.range.start} → ${data.range.end})`;
   }
   return "";
 }
 
+// helper: which insights endpoint to use
+function getInsightsPath(period) {
+  if (period === "daily") return "/api/items/insights/daily";
+  if (period === "weekly") return "/api/items/insights/weekly";
+  if (period === "monthly") return "/api/items/insights/monthly";
+  return null; // yearly not implemented yet
+}
+
 function ItemSalesExplorer() {
   const [period, setPeriod] = useState("daily");
-  const [date, setDate] = useState(todayISO); // YYYY-MM-DD
+  const [date, setDate] = useState(todayISO); // store as full date (YYYY-MM-DD)
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [data, setData] = useState(null);
   const [locationFilter, setLocationFilter] = useState("ALL");
 
-  // Auto-load whenever period or date changes
-  useEffect(() => {
-    fetchData();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [period, date]);
+  // AI insights state
+  const [aiInsights, setAiInsights] = useState("");
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState("");
 
+  // Load base item data when period changes (user then hits Refresh or date change)
+  useEffect(() => {
+    // On period change, don't auto-hit backend; user can hit Refresh
+    setData(null);
+    setAiInsights("");
+    setAiError("");
+  }, [period]);
+
+  // ===========
+  // Fetch DATA
+  // ===========
   async function fetchData(customDate) {
     const currentPeriod = PERIODS.find((p) => p.id === period);
     if (!currentPeriod) return;
@@ -53,6 +70,8 @@ function ItemSalesExplorer() {
     setLoading(true);
     setError("");
     setData(null);
+    setAiInsights("");
+    setAiError("");
 
     try {
       const url = new URL(currentPeriod.endpoint, API_BASE_URL);
@@ -72,11 +91,78 @@ function ItemSalesExplorer() {
 
       const json = await res.json();
       setData(json);
-      setLocationFilter("ALL");
+      setLocationFilter("ALL"); // reset location filter when new range loads
+
+      // After we have data, fetch AI insights for ALL locations for this period
+      await fetchInsights(rawDate, "ALL");
     } catch (err) {
       setError(err.message || "Error loading item sales");
     } finally {
       setLoading(false);
+    }
+  }
+
+  // =================
+  // Fetch AI insight
+  // =================
+  async function fetchInsights(customDate, locFilterOverride) {
+    const path = getInsightsPath(period);
+    if (!path) {
+      // no backend insights for this period yet
+      setAiInsights("");
+      setAiError("");
+      return;
+    }
+
+    const rawDate = customDate || date;
+    let paramValue = rawDate;
+
+    if (period === "monthly") {
+      paramValue = rawDate.slice(0, 7); // YYYY-MM
+    } else if (period === "yearly") {
+      // We actually don't support yearly insights yet, but guard anyway
+      paramValue = rawDate.slice(0, 4);
+    }
+
+    const locFilter = locFilterOverride ?? locationFilter;
+
+    setAiLoading(true);
+    setAiError("");
+
+    try {
+      const url = new URL(path, API_BASE_URL);
+
+      if (period === "daily") {
+        url.searchParams.set("date", paramValue);
+      } else if (period === "weekly") {
+        url.searchParams.set("week", paramValue);
+      } else if (period === "monthly") {
+        url.searchParams.set("month", paramValue);
+      }
+
+      if (locFilter && locFilter !== "ALL") {
+        url.searchParams.set("locationId", locFilter);
+      }
+
+      const res = await fetch(url.toString(), {
+        headers: {
+          "Content-Type": "application/json",
+          "x-passcode": "7238",
+        },
+      });
+
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || "Failed to load AI insights");
+      }
+
+      const json = await res.json();
+      setAiInsights(json.insights || "");
+    } catch (err) {
+      setAiError(err.message || "Error loading AI insights");
+      setAiInsights("");
+    } finally {
+      setAiLoading(false);
     }
   }
 
@@ -88,11 +174,14 @@ function ItemSalesExplorer() {
       const safeYear = val || new Date().getFullYear().toString();
       const full = `${safeYear}-01-01`;
       setDate(full);
+      fetchData(full);
     } else if (period === "monthly") {
       const full = `${val}-01`;
       setDate(full);
+      fetchData(full);
     } else {
       setDate(val);
+      fetchData(val);
     }
   }
 
@@ -100,17 +189,19 @@ function ItemSalesExplorer() {
   const grandTotal = data?.grandTotal || 0;
   const locations = data?.locations || [];
 
-  // Determine which items + total to show based on location filter
+  // Determine which items to show based on location filter
   let tableItems = data?.overallItems || [];
   let scopeLabel = "All locations";
-  let scopeTotal = grandTotal;
+  let scopeTotalFormatted = data?.grandTotalFormatted || "$0.00";
+  let scopeGrandTotal = grandTotal;
 
   if (locationFilter !== "ALL" && locations.length > 0) {
     const loc = locations.find((l) => l.locationId === locationFilter);
     if (loc) {
       tableItems = loc.items || [];
       scopeLabel = loc.locationName || loc.locationId;
-      scopeTotal = loc.total || 0;
+      scopeTotalFormatted = loc.totalFormatted || "$0.00";
+      scopeGrandTotal = loc.total || 0;
     }
   }
 
@@ -136,7 +227,8 @@ function ItemSalesExplorer() {
                 borderRadius: 999,
                 padding: "6px 12px",
                 border: "1px solid #374151",
-                background: period === p.id ? "#38bdf8" : "rgba(15,23,42,0.8)",
+                background:
+                  period === p.id ? "#38bdf8" : "rgba(15,23,42,0.8)",
                 color: period === p.id ? "#0f172a" : "#e5e7eb",
                 cursor: "pointer",
                 fontSize: 12,
@@ -167,7 +259,7 @@ function ItemSalesExplorer() {
             max={period === "yearly" ? "2100" : undefined}
             value={
               period === "monthly"
-                ? date.slice(0, 7)
+                ? (date.length >= 7 ? date.slice(0, 7) : date)
                 : period === "yearly"
                 ? date.slice(0, 4)
                 : date
@@ -273,10 +365,7 @@ function ItemSalesExplorer() {
                   Item revenue ({scopeLabel})
                 </div>
                 <div style={{ fontSize: 20, fontWeight: 700 }}>
-                  {locationFilter === "ALL"
-                    ? data.grandTotalFormatted
-                    : locations.find((l) => l.locationId === locationFilter)
-                        ?.totalFormatted || "$0.00"}
+                  {scopeTotalFormatted}
                 </div>
                 <div style={{ fontSize: 11, color: "#6b7280" }}>
                   {tableItems.length} items
@@ -299,7 +388,12 @@ function ItemSalesExplorer() {
               </div>
               <select
                 value={locationFilter}
-                onChange={(e) => setLocationFilter(e.target.value)}
+                onChange={async (e) => {
+                  const newLoc = e.target.value;
+                  setLocationFilter(newLoc);
+                  // refresh AI insight for that location (if supported period)
+                  await fetchInsights(undefined, newLoc);
+                }}
                 style={{
                   background: "#020617",
                   color: "#e5e7eb",
@@ -413,7 +507,9 @@ function ItemSalesExplorer() {
                 <tbody>
                   {tableItems.map((item, idx) => {
                     const pct =
-                      scopeTotal > 0 ? (item.total / scopeTotal) * 100 : 0;
+                      scopeGrandTotal > 0
+                        ? (item.total / scopeGrandTotal) * 100
+                        : 0;
                     return (
                       <tr
                         key={item.itemName + idx}
@@ -493,7 +589,7 @@ function ItemSalesExplorer() {
             </div>
           </div>
 
-          {/* Right side: per-location summary */}
+          {/* Right side: AI insight + per-location summary */}
           <div
             style={{
               display: "flex",
@@ -503,6 +599,75 @@ function ItemSalesExplorer() {
               overflowY: "auto",
             }}
           >
+            {/* AI INSIGHTS CARD */}
+            <div
+              style={{
+                borderRadius: 12,
+                border: "1px solid #1f2937",
+                padding: 10,
+                background: "rgba(15,23,42,0.95)",
+              }}
+            >
+              <div
+                style={{
+                  fontSize: 13,
+                  fontWeight: 600,
+                  marginBottom: 4,
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                }}
+              >
+                <span>AI Insights</span>
+                <span
+                  style={{
+                    fontSize: 11,
+                    color: "#6b7280",
+                  }}
+                >
+                  {scopeLabel}
+                </span>
+              </div>
+
+              {getInsightsPath(period) === null && (
+                <div style={{ fontSize: 12, color: "#9ca3af" }}>
+                  AI insights are currently available for daily, weekly, and
+                  monthly views. Yearly insights are not enabled yet.
+                </div>
+              )}
+
+              {getInsightsPath(period) !== null && (
+                <>
+                  {aiLoading && (
+                    <div style={{ fontSize: 12, color: "#9ca3af" }}>
+                      Generating insight…
+                    </div>
+                  )}
+                  {aiError && (
+                    <div
+                      style={{
+                        fontSize: 12,
+                        color: "#fecaca",
+                      }}
+                    >
+                      {aiError}
+                    </div>
+                  )}
+                  {!aiLoading && !aiError && aiInsights && (
+                    <div style={{ fontSize: 12, color: "#e5e7eb" }}>
+                      {aiInsights}
+                    </div>
+                  )}
+                  {!aiLoading && !aiError && !aiInsights && (
+                    <div style={{ fontSize: 12, color: "#6b7280" }}>
+                      No AI insight yet — hit Refresh or pick a different date.
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+
+            {/* Locations summary */}
             <div style={{ fontSize: 13, color: "#9ca3af", marginBottom: 4 }}>
               Locations summary
             </div>
@@ -519,7 +684,10 @@ function ItemSalesExplorer() {
                       : "rgba(15,23,42,0.9)",
                   cursor: "pointer",
                 }}
-                onClick={() => setLocationFilter(loc.locationId)}
+                onClick={async () => {
+                  setLocationFilter(loc.locationId);
+                  await fetchInsights(undefined, loc.locationId);
+                }}
               >
                 <div
                   style={{

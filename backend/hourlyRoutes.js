@@ -1,0 +1,332 @@
+// hourlyRoutes.js
+import { DateTime } from "luxon";
+import { SquareError } from "square";
+
+/**
+ * Register hourly sales routes on an existing Express app.
+ * Call: registerHourlyRoutes(app, client)
+ *
+ * Endpoints:
+ *   - GET /api/sales/hourly?date=YYYY-MM-DD&comparePrev=true
+ *   - GET /api/sales/hourly/weekly?week=YYYY-MM-DD
+ *   - GET /api/sales/hourly/monthly?month=YYYY-MM
+ *
+ * All summaries only include hours 5:00–20:59 (5 AM–8 PM).
+ */
+export function registerHourlyRoutes(app, client) {
+  /**
+   * DAILY HOURLY: /api/sales/hourly?date=YYYY-MM-DD&comparePrev=true
+   */
+  app.get("/api/sales/hourly", async (req, res) => {
+    const dateStr = req.query.date;
+    const comparePrev = req.query.comparePrev === "true";
+    const timezone = process.env.STORE_TIMEZONE || "America/Los_Angeles";
+
+    if (!dateStr) {
+      return res.status(400).json({ error: "Missing date=YYYY-MM-DD" });
+    }
+
+    try {
+      const target = DateTime.fromISO(dateStr, { zone: timezone });
+      if (!target.isValid) {
+        return res.status(400).json({ error: "Invalid date format" });
+      }
+
+      // All locations
+      const locationsResp = await client.locations.list();
+      const locationsRaw = locationsResp.locations || [];
+      const locations = locationsRaw.map((loc) => ({
+        id: loc.id,
+        name: loc.name || loc.id,
+      }));
+
+      // This day
+      const baseSummary = await buildHourlySummaryForDate(
+        dateStr,
+        timezone,
+        client,
+        locations
+      );
+
+      let comparison = null;
+      if (comparePrev) {
+        const prevDateStr = target.minus({ days: 7 }).toISODate();
+        comparison = await buildHourlySummaryForDate(
+          prevDateStr,
+          timezone,
+          client,
+          locations
+        );
+      }
+
+      res.json({
+        ...baseSummary, // includes date, timezone, locations, hourly, etc.
+        comparison,
+      });
+    } catch (err) {
+      console.error("Error fetching hourly sales (daily):", err);
+
+      if (err instanceof SquareError) {
+        return res.status(502).json({
+          error: "Square API error",
+          details: err.body,
+        });
+      }
+
+      res.status(500).json({
+        error: "Unexpected server error",
+      });
+    }
+  });
+
+  /**
+   * WEEKLY HOURLY: /api/sales/hourly/weekly?week=YYYY-MM-DD
+   * Aggregates that entire week (Mon–Sun or locale week) into an hourly profile.
+   */
+  app.get("/api/sales/hourly/weekly", async (req, res) => {
+    const weekStr = req.query.week;
+    const timezone = process.env.STORE_TIMEZONE || "America/Los_Angeles";
+
+    if (!weekStr) {
+      return res.status(400).json({ error: "Missing week=YYYY-MM-DD" });
+    }
+
+    try {
+      const target = DateTime.fromISO(weekStr, { zone: timezone });
+      if (!target.isValid) {
+        return res.status(400).json({ error: "Invalid week date" });
+      }
+
+      const start = target.startOf("week");
+      const end = target.endOf("week");
+
+      const locationsResp = await client.locations.list();
+      const locationsRaw = locationsResp.locations || [];
+      const locations = locationsRaw.map((loc) => ({
+        id: loc.id,
+        name: loc.name || loc.id,
+      }));
+
+      const summary = await buildHourlySummaryForRange(
+        start,
+        end,
+        timezone,
+        client,
+        locations
+      );
+
+      res.json({
+        ...summary,
+        type: "weekly",
+        range: {
+          start: start.toISODate(),
+          end: end.toISODate(),
+        },
+      });
+    } catch (err) {
+      console.error("Error fetching hourly sales (weekly):", err);
+
+      if (err instanceof SquareError) {
+        return res.status(502).json({
+          error: "Square API error",
+          details: err.body,
+        });
+      }
+
+      res.status(500).json({
+        error: "Unexpected server error",
+      });
+    }
+  });
+
+  /**
+   * MONTHLY HOURLY: /api/sales/hourly/monthly?month=YYYY-MM
+   * Aggregates that entire calendar month into an hourly profile.
+   */
+  app.get("/api/sales/hourly/monthly", async (req, res) => {
+    const monthStr = req.query.month; // YYYY-MM
+    const timezone = process.env.STORE_TIMEZONE || "America/Los_Angeles";
+
+    if (!monthStr) {
+      return res.status(400).json({ error: "Missing month=YYYY-MM" });
+    }
+
+    try {
+      const start = DateTime.fromISO(monthStr + "-01", {
+        zone: timezone,
+      }).startOf("month");
+      if (!start.isValid) {
+        return res.status(400).json({ error: "Invalid month format" });
+      }
+      const end = start.endOf("month");
+
+      const locationsResp = await client.locations.list();
+      const locationsRaw = locationsResp.locations || [];
+      const locations = locationsRaw.map((loc) => ({
+        id: loc.id,
+        name: loc.name || loc.id,
+      }));
+
+      const summary = await buildHourlySummaryForRange(
+        start,
+        end,
+        timezone,
+        client,
+        locations
+      );
+
+      res.json({
+        ...summary,
+        type: "monthly",
+        range: {
+          start: start.toISODate(),
+          end: end.toISODate(),
+        },
+      });
+    } catch (err) {
+      console.error("Error fetching hourly sales (monthly):", err);
+
+      if (err instanceof SquareError) {
+        return res.status(502).json({
+          error: "Square API error",
+          details: err.body,
+        });
+      }
+
+      res.status(500).json({
+        error: "Unexpected server error",
+      });
+    }
+  });
+}
+
+/**
+ * Initialize buckets for hours 5..20 (5 AM–8 PM) for all locations.
+ */
+function initHourlyBuckets(locations) {
+  const hourly = {};
+  const locIds = locations.map((l) => l.id);
+
+  for (let h = 5; h <= 20; h++) {
+    const totalsByLocation = {};
+    const countByLocation = {};
+
+    for (const locId of locIds) {
+      totalsByLocation[locId] = 0;
+      countByLocation[locId] = 0;
+    }
+
+    hourly[h] = {
+      totalsByLocation,
+      countByLocation,
+      totalAllLocations: 0,
+      countAllLocations: 0,
+    };
+  }
+
+  return hourly;
+}
+
+/**
+ * DAILY summary for a single date string (YYYY-MM-DD).
+ */
+async function buildHourlySummaryForDate(
+  dateStr,
+  timezone,
+  client,
+  locations
+) {
+  const start = DateTime.fromISO(dateStr, { zone: timezone }).startOf("day");
+  const end = start.endOf("day");
+
+  if (!start.isValid) {
+    throw new Error("Invalid date for hourly summary");
+  }
+
+  return buildHourlySummaryForRange(start, end, timezone, client, locations, {
+    includeDate: dateStr,
+  });
+}
+
+/**
+ * Range-based hourly summary (used by weekly & monthly).
+ * start and end are Luxon DateTime objects in store timezone.
+ */
+async function buildHourlySummaryForRange(
+  start,
+  end,
+  timezone,
+  client,
+  locations,
+  extra = {}
+) {
+  const beginTime = start.toUTC().toISO();
+  const endTime = end.toUTC().toISO();
+
+  const hourly = initHourlyBuckets(locations);
+
+  let totalAllLocationsCents = 0;
+  let totalCountAllLocations = 0;
+
+  // One payments.list per location (Option C)
+  for (const loc of locations) {
+    const paymentsIterable = await client.payments.list({
+      beginTime,
+      endTime,
+      sortOrder: "ASC",
+      locationId: loc.id, // critical for multi-location correctness
+    });
+
+    for await (const payment of paymentsIterable) {
+      if (!payment) continue;
+      if (payment.status && payment.status !== "COMPLETED") continue;
+
+      const raw = payment.amountMoney?.amount ?? 0n;
+      const amountCents =
+        typeof raw === "bigint" ? Number(raw) : Number(raw || 0);
+
+      const createdAt = payment.createdAt;
+      if (!createdAt) continue;
+
+      // Convert createdAt → store local time → hour 0..23
+      const dtLocal = DateTime.fromISO(createdAt, { zone: "utc" }).setZone(
+        timezone
+      );
+      const hour = dtLocal.hour; // 0..23
+
+      // Only track 5..20
+      if (hour < 5 || hour > 20) continue;
+
+      const bucket = hourly[hour];
+      if (!bucket) continue;
+
+      bucket.totalsByLocation[loc.id] += amountCents / 100;
+      bucket.countByLocation[loc.id] += 1;
+
+      bucket.totalAllLocations += amountCents / 100;
+      bucket.countAllLocations += 1;
+
+      totalAllLocationsCents += amountCents;
+      totalCountAllLocations += 1;
+    }
+  }
+
+  // Find max total across hours (for heatmap color scaling)
+  let maxHourAllLocations = 0;
+  for (let h = 5; h <= 20; h++) {
+    const total = hourly[h].totalAllLocations;
+    if (total > maxHourAllLocations) {
+      maxHourAllLocations = total;
+    }
+  }
+
+  return {
+    ...extra, // may contain { date }
+    timezone,
+    locations,
+    hourly,
+    maxHourAllLocations,
+    totalAllLocations: totalAllLocationsCents / 100,
+    totalCountAllLocations,
+  };
+}

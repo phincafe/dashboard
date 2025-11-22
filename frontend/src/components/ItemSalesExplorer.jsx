@@ -25,25 +25,24 @@ function formatDateLabel(data) {
 
 function ItemSalesExplorer() {
   const [period, setPeriod] = useState("daily");
-  const [date, setDate] = useState(todayISO); // used for daily + weekly; monthly we use yyyy-mm
+  const [date, setDate] = useState(todayISO); // YYYY-MM-DD
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [data, setData] = useState(null);
   const [locationFilter, setLocationFilter] = useState("ALL");
 
-  // Load data whenever period or date changes
+  // Auto-load whenever period or date changes
   useEffect(() => {
     fetchData();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [period]);
+  }, [period, date]);
 
   async function fetchData(customDate) {
     const currentPeriod = PERIODS.find((p) => p.id === period);
     if (!currentPeriod) return;
 
     const rawDate = customDate || date;
-
-   let paramValue = rawDate;
+    let paramValue = rawDate;
 
     if (period === "monthly") {
       paramValue = rawDate.slice(0, 7); // "YYYY-MM"
@@ -73,7 +72,7 @@ function ItemSalesExplorer() {
 
       const json = await res.json();
       setData(json);
-      setLocationFilter("ALL"); // reset filter when new data loads
+      setLocationFilter("ALL");
     } catch (err) {
       setError(err.message || "Error loading item sales");
     } finally {
@@ -82,40 +81,36 @@ function ItemSalesExplorer() {
   }
 
   // Handle date change from picker
-function handleDateChange(e) {
-  const val = e.target.value;
+  function handleDateChange(e) {
+    const val = e.target.value;
 
-  if (period === "yearly") {
-    // store as YYYY-01-01 so state is still a full date
-    const safeYear = val || new Date().getFullYear().toString();
-    const full = `${safeYear}-01-01`;
-    setDate(full);
-    fetchData(full);
-  } else if (period === "monthly") {
-    // browser gives YYYY-MM; convert to YYYY-MM-01 for state
-    const full = `${val}-01`;
-    setDate(full);
-    fetchData(full);
-  } else {
-    setDate(val);
-    fetchData(val);
+    if (period === "yearly") {
+      const safeYear = val || new Date().getFullYear().toString();
+      const full = `${safeYear}-01-01`;
+      setDate(full);
+    } else if (period === "monthly") {
+      const full = `${val}-01`;
+      setDate(full);
+    } else {
+      setDate(val);
+    }
   }
-}
-
 
   const dateLabel = formatDateLabel(data);
   const grandTotal = data?.grandTotal || 0;
   const locations = data?.locations || [];
 
-  // Determine which items to show based on location filter
+  // Determine which items + total to show based on location filter
   let tableItems = data?.overallItems || [];
   let scopeLabel = "All locations";
+  let scopeTotal = grandTotal;
 
   if (locationFilter !== "ALL" && locations.length > 0) {
     const loc = locations.find((l) => l.locationId === locationFilter);
     if (loc) {
       tableItems = loc.items || [];
       scopeLabel = loc.locationName || loc.locationId;
+      scopeTotal = loc.total || 0;
     }
   }
 
@@ -141,8 +136,7 @@ function handleDateChange(e) {
                 borderRadius: 999,
                 padding: "6px 12px",
                 border: "1px solid #374151",
-                background:
-                  period === p.id ? "#38bdf8" : "rgba(15,23,42,0.8)",
+                background: period === p.id ? "#38bdf8" : "rgba(15,23,42,0.8)",
                 color: period === p.id ? "#0f172a" : "#e5e7eb",
                 cursor: "pointer",
                 fontSize: 12,
@@ -154,42 +148,41 @@ function handleDateChange(e) {
           ))}
         </div>
 
-       <label style={{ fontSize: 13 }}>
-  {period === "monthly"
-    ? "Month:"
-    : period === "yearly"
-    ? "Year:"
-    : "Date:"}
-  &nbsp;
-  <input
-    type={
-      period === "monthly"
-        ? "month"
-        : period === "yearly"
-        ? "number"
-        : "date"
-    }
-    min={period === "yearly" ? "2020" : undefined}
-    max={period === "yearly" ? "2100" : undefined}
-    value={
-      period === "monthly"
-        ? (date.length >= 7 ? date.slice(0, 7) : date)
-        : period === "yearly"
-        ? date.slice(0, 4)
-        : date
-    }
-    onChange={handleDateChange}
-    style={{
-      background: "#020617",
-      color: "#e5e7eb",
-      borderRadius: 6,
-      border: "1px solid #374151",
-      padding: "6px 8px",
-      fontSize: 13,
-    }}
-  />
-</label>
-
+        <label style={{ fontSize: 13 }}>
+          {period === "monthly"
+            ? "Month:"
+            : period === "yearly"
+            ? "Year:"
+            : "Date:"}
+          &nbsp;
+          <input
+            type={
+              period === "monthly"
+                ? "month"
+                : period === "yearly"
+                ? "number"
+                : "date"
+            }
+            min={period === "yearly" ? "2020" : undefined}
+            max={period === "yearly" ? "2100" : undefined}
+            value={
+              period === "monthly"
+                ? date.slice(0, 7)
+                : period === "yearly"
+                ? date.slice(0, 4)
+                : date
+            }
+            onChange={handleDateChange}
+            style={{
+              background: "#020617",
+              color: "#e5e7eb",
+              borderRadius: 6,
+              border: "1px solid #374151",
+              padding: "6px 8px",
+              fontSize: 13,
+            }}
+          />
+        </label>
 
         <button
           onClick={() => fetchData()}
@@ -264,7 +257,9 @@ function handleDateChange(e) {
                     ? "Day"
                     : data.type === "weekly"
                     ? "Week"
-                    : "Month"}
+                    : data.type === "monthly"
+                    ? "Month"
+                    : "Year"}
                 </div>
                 <div style={{ fontSize: 16, fontWeight: 600 }}>
                   {dateLabel}
@@ -418,15 +413,15 @@ function handleDateChange(e) {
                 <tbody>
                   {tableItems.map((item, idx) => {
                     const pct =
-                      grandTotal > 0
-                        ? (item.total / grandTotal) * 100
-                        : 0;
+                      scopeTotal > 0 ? (item.total / scopeTotal) * 100 : 0;
                     return (
                       <tr
                         key={item.itemName + idx}
                         style={{
                           background:
-                            idx % 2 === 0 ? "rgba(15,23,42,0.9)" : "rgba(15,23,42,0.7)",
+                            idx % 2 === 0
+                              ? "rgba(15,23,42,0.9)"
+                              : "rgba(15,23,42,0.7)",
                         }}
                       >
                         <td

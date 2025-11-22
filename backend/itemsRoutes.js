@@ -392,6 +392,64 @@ export function registerItemRoutes(app, client) {
       res.status(500).json({ error: "Unexpected server error" });
     }
   });
+  /**
+   * YEARLY item sales (all locations)
+   * GET /api/items/yearly?year=YYYY
+   */
+  app.get("/api/items/yearly", async (req, res) => {
+    const yearStr = req.query.year; // e.g. 2025
+    const timezone = process.env.STORE_TIMEZONE || "America/Los_Angeles";
+
+    if (!yearStr) {
+      return res.status(400).json({ error: "Missing year=YYYY" });
+    }
+
+    try {
+      const year = parseInt(yearStr, 10);
+      if (isNaN(year) || year < 2000 || year > 2100) {
+        return res.status(400).json({ error: "Invalid year format" });
+      }
+
+      const start = DateTime.fromObject(
+        { year, month: 1, day: 1 },
+        { zone: timezone }
+      ).startOf("year");
+      const end = start.endOf("year");
+
+      const beginTime = start.toUTC().toISO();
+      const endTime = end.toUTC().toISO();
+
+      const agg = await aggregateItemSalesForRange(beginTime, endTime, client);
+
+      res.json({
+        type: "yearly",
+        year,
+        range: {
+          start: start.toISODate(),
+          end: end.toISODate(),
+        },
+        timezone,
+        grandTotal: agg.grandTotal,
+        grandTotalFormatted: agg.grandTotal.toLocaleString("en-US", {
+          style: "currency",
+          currency: "USD",
+        }),
+        overallItems: agg.overallItems,
+        locations: agg.perLocation,
+      });
+    } catch (err) {
+      console.error("Error fetching item sales (yearly):", err);
+
+      if (err instanceof SquareError) {
+        return res.status(502).json({
+          error: "Square API error",
+          details: err.body,
+        });
+      }
+
+      res.status(500).json({ error: "Unexpected server error" });
+    }
+  });
 
   // =========================
   // AI-STYLE INSIGHT ENDPOINTS

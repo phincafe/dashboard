@@ -10,7 +10,6 @@ dotenv.config();
 
 const app = express();
 
-
 // Basic config
 const PORT = process.env.PORT || 4000;
 const allowedOrigins = [
@@ -31,7 +30,7 @@ app.use(
 
 app.use(express.json());
 
-// Very simple passcode auth (same behavior as your current app)
+// Very simple passcode auth
 const basicPasscode = process.env.BASIC_AUTH_PASSCODE;
 if (basicPasscode) {
   app.use((req, res, next) => {
@@ -56,10 +55,7 @@ const client = new SquareClient({
 
 console.log("SQUARE_ENVIRONMENT raw:", process.env.SQUARE_ENVIRONMENT);
 console.log("Has SQUARE_ACCESS_TOKEN:", !!process.env.SQUARE_ACCESS_TOKEN);
-console.log(
-  "SQUARE_ACCESS_TOKEN debug:",
-  JSON.stringify(process.env.SQUARE_ACCESS_TOKEN).slice(0, 30) + "..."
-);
+
 // Root health check
 app.get("/", (req, res) => {
   res.json({
@@ -69,32 +65,17 @@ app.get("/", (req, res) => {
   });
 });
 
-// Register feature routes
+// Register feature routes (hourly + items)
 registerHourlyRoutes(app, client);
 registerItemRoutes(app, client);
 
-// --- Daily / weekly / monthly / yearly sales & refunds ---
-// NOTE: This mirrors the behavior of your original index.js.
-// It exposes:
-//   GET /api/sales?date=YYYY-MM-DD
-//   GET /api/sales/weekly?week=YYYY-MM-DD
-//   GET /api/sales/monthly?month=YYYY-MM
-//   GET /api/sales/yearly?year=YYYY
-//   GET /api/sales/location?locationId=...&date=YYYY-MM-DD
-//   GET /api/refunds?date=YYYY-MM-DD
-//   GET /api/refunds/weekly?week=YYYY-MM-DD
-//   GET /api/refunds/monthly?month=YYYY-MM
-//   GET /api/refunds/yearly?year=YYYY
-//   GET /api/debug-locations
-//
-// For brevity, these handlers are simplified but keep the same
-// query parameters and a similar JSON shape to your current app.
 const storeTimezone = process.env.STORE_TIMEZONE || "America/Los_Angeles";
 
 async function getAllLocations() {
   const locationsResponse = await client.locations.list();
   if (locationsResponse.errors) throw locationsResponse.errors;
-  return locationsResponse.result.locations || [];
+  const locations = locationsResponse.locations || [];
+  return locations;
 }
 
 async function aggregateSales(beginTime, endTime, locationIds) {
@@ -114,10 +95,11 @@ async function aggregateSales(beginTime, endTime, locationIds) {
 
   if (ordersResponse.errors) throw ordersResponse.errors;
 
+  const orders = ordersResponse.orders || [];
+
   let totalCents = 0;
   let count = 0;
 
-  const orders = ordersResponse.result.orders || [];
   for (const order of orders) {
     const tenders = order.tenders || [];
     for (const tender of tenders) {
@@ -203,17 +185,16 @@ app.get("/api/sales", async (req, res) => {
   }
 });
 
-
+// Test endpoint hitting Square locations
 app.get("/api/test-square", async (req, res) => {
   try {
     const resp = await client.locations.list();
-    res.json({ ok: true, locations: resp.result.locations || [] });
+    res.json({ ok: true, locations: resp.locations || [] });
   } catch (err) {
     console.error("TEST-SQUARE ERROR:", err);
     res.status(500).json({ ok: false, error: err });
   }
 });
-
 
 // Weekly
 app.get("/api/sales/weekly", async (req, res) => {
@@ -304,7 +285,7 @@ app.get("/api/debug-locations", async (req, res) => {
   }
 });
 
-// --- Refund endpoints (simplified like sales) ---
+// Refund helpers
 async function aggregateRefunds(beginTime, endTime, locationIds) {
   const refundsResponse = await client.refunds.list({
     beginTime,
@@ -314,10 +295,11 @@ async function aggregateRefunds(beginTime, endTime, locationIds) {
 
   if (refundsResponse.errors) throw refundsResponse.errors;
 
+  const refunds = refundsResponse.refunds || [];
+
   let totalCents = 0;
   let count = 0;
 
-  const refunds = refundsResponse.result.refunds || [];
   for (const refund of refunds) {
     if (refund.amountMoney && refund.amountMoney.amount != null) {
       totalCents += Number(refund.amountMoney.amount);

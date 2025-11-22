@@ -1,6 +1,6 @@
 {
   "name": "square-reports-backend",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "module",
   "main": "index.js",
   "scripts": {
@@ -11,7 +11,6 @@
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "luxon": "^3.5.0",
-    "square": "^43.2.0",
-    "openai": "^4.0.0"
+    "square": "^43.2.0"
   }
 }

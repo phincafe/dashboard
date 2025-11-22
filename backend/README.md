@@ -1,16 +1,19 @@
-# Square Reports Backend (Render-ready)
+# Square Reports Backend (Fixed for new Square SDK)
 
 - Node + Express
-- Uses Square Node SDK and your existing hourly + item routes
-- Exposes the same REST endpoints as your original app, plus CORS for the React frontend.
+- Uses Square Node SDK v43 (`token` instead of `accessToken`)
+- Responses use top-level `locations`, `orders`, `refunds` fields.
 
 ## Local dev
 
 ```bash
 cd backend
-cp .env.example .env   # fill in keys
+cp .env.example .env   # fill in SQUARE_ACCESS_TOKEN, etc.
 npm install
 npm start
 ```
 
-This will start on http://localhost:4000.
+Then hit:
+
+- GET http://localhost:4000/api/test-square
+- GET http://localhost:4000/api/sales?date=2025-01-01

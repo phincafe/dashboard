@@ -1,465 +1,375 @@
-// hourlyRoutes.js
+// hourlyRoutes.js - Hourly Heatmap + AI Insights for Phin Cafe
+
 import { DateTime } from "luxon";
 import { SquareError } from "square";
+import OpenAI from "openai";
+
+const openaiApiKey = process.env.OPENAI_API_KEY || null;
+const openaiClient = openaiApiKey ? new OpenAI({ apiKey: openaiApiKey }) : null;
 
 /**
- * Register hourly sales routes on an existing Express app.
- * Call: registerHourlyRoutes(app, client)
- *
- * Endpoints:
- *   - GET /api/sales/hourly?date=YYYY-MM-DD&comparePrev=true
- *   - GET /api/sales/hourly/weekly?week=YYYY-MM-DD&comparePrev=true
- *   - GET /api/sales/hourly/monthly?month=YYYY-MM&comparePrev=true
- *   - GET /api/sales/hourly/yearly?year=YYYY&comparePrev=true
- *
- * All summaries only include hours 5:00–20:59 (5 AM–8 PM).
+ * Call this from your main index.js:
+ *   import { registerHourlyRoutes } from "./hourlyRoutes.js";
+ *   ...
+ *   registerHourlyRoutes(app, client);
  */
 export function registerHourlyRoutes(app, client) {
+  const timezone = process.env.STORE_TIMEZONE || "America/Los_Angeles";
+
   /**
-   * DAILY HOURLY: /api/sales/hourly?date=YYYY-MM-DD&comparePrev=true
+   * Core helper: aggregate hourly sales for a single date (all locations)
+   * Returns:
+   * {
+   *   date,
+   *   timezone,
+   *   grandTotal,
+   *   grandTotalFormatted,
+   *   buckets: [ { hour, label, total, totalFormatted } ],
+   *   locations: [
+   *     {
+   *       locationId,
+   *       locationName,
+   *       total,
+   *       totalFormatted,
+   *       buckets: [ { hour, label, total, totalFormatted } ]
+   *     }
+   *   ]
+   * }
    */
-  app.get("/api/sales/hourly", async (req, res) => {
+  async function aggregateHourlyForDate(dateStr) {
+    const start = DateTime.fromISO(dateStr, { zone: timezone }).startOf("day");
+    const end = start.endOf("day");
+
+    if (!start.isValid) {
+      throw new Error("Invalid date format for hourly report");
+    }
+
+    const beginTime = start.toUTC().toISO();
+    const endTime = end.toUTC().toISO();
+
+    // 1) Get all locations
+    const locationsResp = await client.locations.list();
+    const locations = locationsResp.locations || [];
+    const locationMap = new Map(
+      locations.map((loc) => [loc.id, loc.name || loc.id])
+    );
+
+    // 2) Prepare buckets: 0–23 hours
+    function makeEmptyBuckets() {
+      const arr = [];
+      for (let h = 0; h < 24; h++) {
+        const label = `${String(h).padStart(2, "0")}:00`;
+        arr.push({
+          hour: h,
+          label,
+          totalCents: 0,
+        });
+      }
+      return arr;
+    }
+
+    const overallBuckets = makeEmptyBuckets();
+    const perLocationBuckets = new Map(); // locId -> { locationId, locationName, buckets }
+
+    // 3) Base Orders search body – using CREATED_AT
+    const baseSearchBody = {
+      locationIds: locations.map((loc) => loc.id),
+      query: {
+        filter: {
+          dateTimeFilter: {
+            createdAt: {
+              startAt: beginTime,
+              endAt: endTime,
+            },
+          },
+          // keep stateFilter loose to match other reports
+        },
+        sort: {
+          sortField: "CREATED_AT",
+          sortOrder: "ASC",
+        },
+      },
+    };
+
+    let cursor = undefined;
+
+    do {
+      const body = cursor ? { ...baseSearchBody, cursor } : baseSearchBody;
+      const resp = await client.orders.search(body);
+      const orders = resp.orders || [];
+      cursor = resp.cursor;
+
+      for (const order of orders) {
+        if (!order) continue;
+
+        const locId = order.locationId || "UNKNOWN";
+        const locName = locationMap.get(locId) || locId;
+
+        if (!perLocationBuckets.has(locId)) {
+          perLocationBuckets.set(locId, {
+            locationId: locId,
+            locationName: locName,
+            buckets: makeEmptyBuckets(),
+          });
+        }
+
+        const createdAt = order.createdAt || order.closedAt || null;
+        if (!createdAt) continue;
+
+        const dt = DateTime.fromISO(createdAt, { zone: timezone });
+        if (!dt.isValid) continue;
+        const hour = dt.hour; // 0–23
+
+        const orderLineItems = order.lineItems || [];
+        let orderTotalCents = 0;
+
+        for (const li of orderLineItems) {
+          const rawMoney =
+            li.grossSalesMoney?.amount ??
+            li.totalMoney?.amount ??
+            0n;
+          const cents =
+            typeof rawMoney === "bigint"
+              ? Number(rawMoney)
+              : Number(rawMoney || 0);
+          orderTotalCents += cents;
+        }
+
+        if (orderTotalCents <= 0) continue;
+
+        // overall
+        overallBuckets[hour].totalCents += orderTotalCents;
+
+        // per location
+        const locBucket = perLocationBuckets.get(locId);
+        locBucket.buckets[hour].totalCents += orderTotalCents;
+      }
+    } while (cursor);
+
+    // final formatting
+    const overall = overallBuckets.map((b) => {
+      const total = b.totalCents / 100;
+      return {
+        hour: b.hour,
+        label: b.label,
+        total,
+        totalFormatted: total.toLocaleString("en-US", {
+          style: "currency",
+          currency: "USD",
+        }),
+      };
+    });
+
+    const locationsArr = [];
+    let grandTotal = 0;
+
+    for (const [locId, locData] of perLocationBuckets.entries()) {
+      const buckets = locData.buckets.map((b) => {
+        const total = b.totalCents / 100;
+        return {
+          hour: b.hour,
+          label: b.label,
+          total,
+          totalFormatted: total.toLocaleString("en-US", {
+            style: "currency",
+            currency: "USD",
+          }),
+        };
+      });
+
+      const locTotal = buckets.reduce((sum, b) => sum + b.total, 0);
+      grandTotal += locTotal;
+
+      locationsArr.push({
+        locationId: locData.locationId,
+        locationName: locData.locationName,
+        total: locTotal,
+        totalFormatted: locTotal.toLocaleString("en-US", {
+          style: "currency",
+          currency: "USD",
+        }),
+        buckets,
+      });
+    }
+
+    const grandTotalFormatted = grandTotal.toLocaleString("en-US", {
+      style: "currency",
+      currency: "USD",
+    });
+
+    return {
+      type: "hourly",
+      date: start.toISODate(),
+      timezone,
+      grandTotal,
+      grandTotalFormatted,
+      buckets: overall,
+      locations: locationsArr,
+    };
+  }
+
+  // ==================
+  // BASE HOURLY ROUTE
+  // ==================
+  // GET /api/hourly?date=YYYY-MM-DD
+  app.get("/api/hourly", async (req, res) => {
     const dateStr = req.query.date;
-    const comparePrev = req.query.comparePrev === "true";
-    const timezone = process.env.STORE_TIMEZONE || "America/Los_Angeles";
+    if (!dateStr) {
+      return res.status(400).json({ error: "Missing date=YYYY-MM-DD" });
+    }
+
+    try {
+      const result = await aggregateHourlyForDate(dateStr);
+      res.json(result);
+    } catch (err) {
+      console.error("Error in /api/hourly:", err);
+
+      if (err instanceof SquareError) {
+        return res.status(502).json({
+          error: "Square API error",
+          details: err.body,
+        });
+      }
+      res.status(500).json({ error: "Unexpected server error" });
+    }
+  });
+
+  // ===========================
+  // AI INSIGHTS FOR HOURLY
+  // ===========================
+
+  async function buildHourlyInsights({
+    scopeLabel,
+    dateLabel,
+    buckets,
+    grandTotal,
+  }) {
+    if (!buckets || buckets.length === 0) {
+      return `No hourly sales data for ${scopeLabel} on ${dateLabel}.`;
+    }
+
+    // find top 3 hours
+    const sorted = [...buckets].sort((a, b) => b.total - a.total);
+    const top = sorted.slice(0, 3);
+    const topTotal = top.reduce((s, h) => s + h.total, 0);
+    const topPct = grandTotal > 0 ? (topTotal / grandTotal) * 100 : 0;
+
+    const fallback = [
+      `On ${dateLabel} at ${scopeLabel}, total sales were $${grandTotal.toFixed(
+        2
+      )}.`,
+      `The busiest hour was ${top[0].label} with about $${top[0].total.toFixed(
+        2
+      )} in sales.`,
+      `Your top ${top.length} hours contributed roughly ${topPct.toFixed(
+        1
+      )}% of the day's revenue.`,
+      `These peaks are strong candidates for staffing and prep focus.`,
+    ].join(" ");
+
+    if (!openaiClient) {
+      return fallback;
+    }
+
+    try {
+      const hoursText = sorted
+        .map(
+          (h) => `${h.label} – $${h.total.toFixed(2)}`
+        )
+        .join("\n");
+
+      const prompt = [
+        `You are a data analyst for a multi-location Vietnamese coffee shop brand named Phin Cafe.`,
+        `You are analyzing hourly sales for a single day.`,
+        ``,
+        `Scope: ${scopeLabel}`,
+        `Date: ${dateLabel}`,
+        `Total sales: $${grandTotal.toFixed(2)}`,
+        ``,
+        `Hourly breakdown (local time):`,
+        hoursText,
+        ``,
+        `Write 3–5 short sentences:`,
+        `- Identify the busiest hours and approximate share of revenue.`,
+        `- Comment on whether the pattern is morning-heavy, afternoon-heavy, or evening-heavy.`,
+        `- Suggest at least one operational or marketing action (staffing, batching, promos, happy hour timing, etc.).`,
+        `Do NOT mention missing data or model limitations. Sound confident and pragmatic.`,
+      ].join("\n");
+
+      const response = await openaiClient.responses.create({
+        model: "gpt-4.1-mini",
+        input: prompt,
+      });
+
+      const aiText =
+        response.output?.[0]?.content?.[0]?.text?.trim() || fallback;
+
+      return aiText;
+    } catch (err) {
+      console.error("OpenAI error in hourly insights:", err);
+      return fallback;
+    }
+  }
+
+  /**
+   * GET /api/hourly/insights?date=YYYY-MM-DD&locationId=optional
+   */
+  app.get("/api/hourly/insights", async (req, res) => {
+    const dateStr = req.query.date;
+    const locationId = req.query.locationId || "ALL";
 
     if (!dateStr) {
       return res.status(400).json({ error: "Missing date=YYYY-MM-DD" });
     }
 
     try {
-      const target = DateTime.fromISO(dateStr, { zone: timezone });
-      if (!target.isValid) {
-        return res.status(400).json({ error: "Invalid date format" });
-      }
+      const agg = await aggregateHourlyForDate(dateStr);
 
-      // All locations
-      const locationsResp = await client.locations.list();
-      const locationsRaw = locationsResp.locations || [];
-      const locations = locationsRaw.map((loc) => ({
-        id: loc.id,
-        name: loc.name || loc.id,
-      }));
+      let scopeLabel = "All locations";
+      let bucketsForScope = agg.buckets;
+      let totalForScope = agg.grandTotal;
 
-      // This day
-      const baseSummary = await buildHourlySummaryForDate(
-        dateStr,
-        timezone,
-        client,
-        locations
-      );
-
-      let comparison = null;
-      if (comparePrev) {
-        const prevDateStr = target.minus({ days: 7 }).toISODate();
-        comparison = await buildHourlySummaryForDate(
-          prevDateStr,
-          timezone,
-          client,
-          locations
+      if (locationId !== "ALL") {
+        const loc = (agg.locations || []).find(
+          (l) => l.locationId === locationId
         );
+        if (!loc) {
+          return res.status(404).json({
+            error: "Location not found in hourly results",
+            locationId,
+          });
+        }
+        scopeLabel = loc.locationName || locationId;
+        bucketsForScope = loc.buckets;
+        totalForScope = loc.total;
       }
+
+      const dateLabel = agg.date;
+      const insights = await buildHourlyInsights({
+        scopeLabel,
+        dateLabel,
+        buckets: bucketsForScope,
+        grandTotal: totalForScope,
+      });
 
       res.json({
-        ...baseSummary, // includes includeDate, timezone, locations, hourly, etc.
-        comparison,
-      });
-    } catch (err) {
-      console.error("Error fetching hourly sales (daily):", err);
-
-      if (err instanceof SquareError) {
-        return res.status(502).json({
-          error: "Square API error",
-          details: err.body,
-        });
-      }
-
-      res.status(500).json({
-        error: "Unexpected server error",
-      });
-    }
-  });
-
-  /**
-   * WEEKLY HOURLY: /api/sales/hourly/weekly?week=YYYY-MM-DD&comparePrev=true
-   * Aggregates that entire week into an hourly profile.
-   */
-  app.get("/api/sales/hourly/weekly", async (req, res) => {
-    const weekStr = req.query.week;
-    const comparePrev = req.query.comparePrev === "true";
-    const timezone = process.env.STORE_TIMEZONE || "America/Los_Angeles";
-
-    if (!weekStr) {
-      return res.status(400).json({ error: "Missing week=YYYY-MM-DD" });
-    }
-
-    try {
-      const target = DateTime.fromISO(weekStr, { zone: timezone });
-      if (!target.isValid) {
-        return res.status(400).json({ error: "Invalid week date" });
-      }
-
-      const start = target.startOf("week");
-      const end = target.endOf("week");
-
-      const locationsResp = await client.locations.list();
-      const locationsRaw = locationsResp.locations || [];
-      const locations = locationsRaw.map((loc) => ({
-        id: loc.id,
-        name: loc.name || loc.id,
-      }));
-
-      const summary = await buildHourlySummaryForRange(
-        start,
-        end,
-        timezone,
-        client,
-        locations
-      );
-
-      let comparison = null;
-      if (comparePrev) {
-        const prevStart = start.minus({ weeks: 1 });
-        const prevEnd = end.minus({ weeks: 1 });
-
-        const prevSummary = await buildHourlySummaryForRange(
-          prevStart,
-          prevEnd,
-          timezone,
-          client,
-          locations
-        );
-
-        comparison = {
-          ...prevSummary,
-          range: {
-            start: prevStart.toISODate(),
-            end: prevEnd.toISODate(),
-          },
-        };
-      }
-
-      res.json({
-        ...summary,
-        type: "weekly",
-        range: {
-          start: start.toISODate(),
-          end: end.toISODate(),
+        type: "hourly-insights",
+        date: agg.date,
+        timezone: agg.timezone,
+        scope: {
+          locationId,
+          label: scopeLabel,
         },
-        comparison,
+        grandTotal: totalForScope,
+        grandTotalFormatted: totalForScope.toLocaleString("en-US", {
+          style: "currency",
+          currency: "USD",
+        }),
+        insights,
       });
     } catch (err) {
-      console.error("Error fetching hourly sales (weekly):", err);
-
-      if (err instanceof SquareError) {
-        return res.status(502).json({
-          error: "Square API error",
-          details: err.body,
-        });
-      }
-
-      res.status(500).json({
-        error: "Unexpected server error",
-      });
+      console.error("Error in /api/hourly/insights:", err);
+      res.status(500).json({ error: "Unexpected server error" });
     }
   });
-
-  /**
-   * MONTHLY HOURLY: /api/sales/hourly/monthly?month=YYYY-MM&comparePrev=true
-   * Aggregates that entire calendar month into an hourly profile.
-   */
-  app.get("/api/sales/hourly/monthly", async (req, res) => {
-    const monthStr = req.query.month; // YYYY-MM
-    const comparePrev = req.query.comparePrev === "true";
-    const timezone = process.env.STORE_TIMEZONE || "America/Los_Angeles";
-
-    if (!monthStr) {
-      return res.status(400).json({ error: "Missing month=YYYY-MM" });
-    }
-
-    try {
-      const start = DateTime.fromISO(monthStr + "-01", {
-        zone: timezone,
-      }).startOf("month");
-      if (!start.isValid) {
-        return res.status(400).json({ error: "Invalid month format" });
-      }
-      const end = start.endOf("month");
-
-      const locationsResp = await client.locations.list();
-      const locationsRaw = locationsResp.locations || [];
-      const locations = locationsRaw.map((loc) => ({
-        id: loc.id,
-        name: loc.name || loc.id,
-      }));
-
-      const summary = await buildHourlySummaryForRange(
-        start,
-        end,
-        timezone,
-        client,
-        locations
-      );
-
-      let comparison = null;
-      if (comparePrev) {
-        const prevStart = start.minus({ months: 1 }).startOf("month");
-        const prevEnd = prevStart.endOf("month");
-
-        const prevSummary = await buildHourlySummaryForRange(
-          prevStart,
-          prevEnd,
-          timezone,
-          client,
-          locations
-        );
-
-        comparison = {
-          ...prevSummary,
-          range: {
-            start: prevStart.toISODate(),
-            end: prevEnd.toISODate(),
-          },
-        };
-      }
-
-      res.json({
-        ...summary,
-        type: "monthly",
-        range: {
-          start: start.toISODate(),
-          end: end.toISODate(),
-        },
-        comparison,
-      });
-    } catch (err) {
-      console.error("Error fetching hourly sales (monthly):", err);
-
-      if (err instanceof SquareError) {
-        return res.status(502).json({
-          error: "Square API error",
-          details: err.body,
-        });
-      }
-
-      res.status(500).json({
-        error: "Unexpected server error",
-      });
-    }
-  });
-
-  /**
-   * YEARLY HOURLY: /api/sales/hourly/yearly?year=YYYY&comparePrev=true
-   * Aggregates that entire calendar year into an hourly profile.
-   */
-  app.get("/api/sales/hourly/yearly", async (req, res) => {
-    const yearStr = req.query.year;
-    const comparePrev = req.query.comparePrev === "true";
-    const timezone = process.env.STORE_TIMEZONE || "America/Los_Angeles";
-
-    if (!yearStr) {
-      return res.status(400).json({ error: "Missing year=YYYY" });
-    }
-
-    try {
-      const start = DateTime.fromISO(yearStr + "-01-01", {
-        zone: timezone,
-      }).startOf("year");
-      if (!start.isValid) {
-        return res.status(400).json({ error: "Invalid year format" });
-      }
-      const end = start.endOf("year");
-
-      const locationsResp = await client.locations.list();
-      const locationsRaw = locationsResp.locations || [];
-      const locations = locationsRaw.map((loc) => ({
-        id: loc.id,
-        name: loc.name || loc.id,
-      }));
-
-      const summary = await buildHourlySummaryForRange(
-        start,
-        end,
-        timezone,
-        client,
-        locations
-      );
-
-      let comparison = null;
-      if (comparePrev) {
-        const prevStart = start.minus({ years: 1 }).startOf("year");
-        const prevEnd = prevStart.endOf("year");
-
-        const prevSummary = await buildHourlySummaryForRange(
-          prevStart,
-          prevEnd,
-          timezone,
-          client,
-          locations
-        );
-
-        comparison = {
-          ...prevSummary,
-          range: {
-            start: prevStart.toISODate(),
-            end: prevEnd.toISODate(),
-          },
-        };
-      }
-
-      res.json({
-        ...summary,
-        type: "yearly",
-        range: {
-          start: start.toISODate(),
-          end: end.toISODate(),
-        },
-        comparison,
-      });
-    } catch (err) {
-      console.error("Error fetching hourly sales (yearly):", err);
-
-      if (err instanceof SquareError) {
-        return res.status(502).json({
-          error: "Square API error",
-          details: err.body,
-        });
-      }
-
-      res.status(500).json({
-        error: "Unexpected server error",
-      });
-    }
-  });
-}
-
-/**
- * Initialize buckets for hours 5..20 (5 AM–8 PM) for all locations.
- */
-function initHourlyBuckets(locations) {
-  const hourly = {};
-  const locIds = locations.map((l) => l.id);
-
-  for (let h = 5; h <= 20; h++) {
-    const totalsByLocation = {};
-    const countByLocation = {};
-
-    for (const locId of locIds) {
-      totalsByLocation[locId] = 0;
-      countByLocation[locId] = 0;
-    }
-
-    hourly[h] = {
-      totalsByLocation,
-      countByLocation,
-      totalAllLocations: 0,
-      countAllLocations: 0,
-    };
-  }
-
-  return hourly;
-}
-
-/**
- * DAILY summary for a single date string (YYYY-MM-DD).
- */
-async function buildHourlySummaryForDate(
-  dateStr,
-  timezone,
-  client,
-  locations
-) {
-  const start = DateTime.fromISO(dateStr, { zone: timezone }).startOf("day");
-  const end = start.endOf("day");
-
-  if (!start.isValid) {
-    throw new Error("Invalid date for hourly summary");
-  }
-
-  return buildHourlySummaryForRange(start, end, timezone, client, locations, {
-    includeDate: dateStr,
-  });
-}
-
-/**
- * Range-based hourly summary (used by weekly & monthly & yearly).
- * start and end are Luxon DateTime objects in store timezone.
- */
-async function buildHourlySummaryForRange(
-  start,
-  end,
-  timezone,
-  client,
-  locations,
-  extra = {}
-) {
-  const beginTime = start.toUTC().toISO();
-  const endTime = end.toUTC().toISO();
-
-  const hourly = initHourlyBuckets(locations);
-
-  let totalAllLocationsCents = 0;
-  let totalCountAllLocations = 0;
-
-  // One payments.list per location
-  for (const loc of locations) {
-    const paymentsIterable = await client.payments.list({
-      beginTime,
-      endTime,
-      sortOrder: "ASC",
-      locationId: loc.id,
-    });
-
-    for await (const payment of paymentsIterable) {
-      if (!payment) continue;
-      if (payment.status && payment.status !== "COMPLETED") continue;
-
-      const raw = payment.amountMoney?.amount ?? 0n;
-      const amountCents =
-        typeof raw === "bigint" ? Number(raw) : Number(raw || 0);
-
-      const createdAt = payment.createdAt;
-      if (!createdAt) continue;
-
-      // Convert createdAt → store local time → hour 0..23
-      const dtLocal = DateTime.fromISO(createdAt, { zone: "utc" }).setZone(
-        timezone
-      );
-      const hour = dtLocal.hour; // 0..23
-
-      // Only track 5..20
-      if (hour < 5 || hour > 20) continue;
-
-      const bucket = hourly[hour];
-      if (!bucket) continue;
-
-      bucket.totalsByLocation[loc.id] += amountCents / 100;
-      bucket.countByLocation[loc.id] += 1;
-
-      bucket.totalAllLocations += amountCents / 100;
-      bucket.countAllLocations += 1;
-
-      totalAllLocationsCents += amountCents;
-      totalCountAllLocations += 1;
-    }
-  }
-
-  // Find max total across hours (for heatmap color scaling)
-  let maxHourAllLocations = 0;
-  for (let h = 5; h <= 20; h++) {
-    const total = hourly[h].totalAllLocations;
-    if (total > maxHourAllLocations) {
-      maxHourAllLocations = total;
-    }
-  }
-
-  return {
-    ...extra, // may contain { includeDate }
-    timezone,
-    locations,
-    hourly,
-    maxHourAllLocations,
-    totalAllLocations: totalAllLocationsCents / 100,
-    totalCountAllLocations,
-  };
 }

@@ -34,18 +34,21 @@ function HourlyHeatmap() {
       } else if (mode === "weekly") {
         url = new URL("/api/sales/hourly/weekly", API_BASE_URL);
         url.searchParams.set("week", weeklyDate);
+        url.searchParams.set("comparePrev", "true");
       } else if (mode === "monthly") {
         url = new URL("/api/sales/hourly/monthly", API_BASE_URL);
         url.searchParams.set("month", monthlyMonth); // YYYY-MM
+        url.searchParams.set("comparePrev", "true");
       } else if (mode === "yearly") {
         url = new URL("/api/sales/hourly/yearly", API_BASE_URL);
         url.searchParams.set("year", yearlyYear);
+        url.searchParams.set("comparePrev", "true");
       }
 
       const res = await fetch(url.toString(), {
         headers: {
           "Content-Type": "application/json",
-          "x-passcode": "7238", // keep your passcode
+          "x-passcode": "7238", // your passcode
         },
       });
 
@@ -64,7 +67,6 @@ function HourlyHeatmap() {
     }
   }
 
-  // Helpers to convert the backend "hourly" object → sorted array
   function hourlyObjectToArray(hourlyObj) {
     if (!hourlyObj) return [];
     return Object.keys(hourlyObj)
@@ -88,20 +90,17 @@ function HourlyHeatmap() {
     return `rgba(34,197,94,${0.15 + 0.7 * ratio})`;
   }
 
-  const isDaily = mode === "daily";
-  const hasComparison = isDaily && data?.comparison;
+  const hasComparison = !!data?.comparison;
 
-  // Header label (top left card)
+  // Header label for current period
   let mainLabel = "";
-  if (isDaily) {
+  if (mode === "daily") {
     mainLabel = data?.includeDate || data?.date || dailyDate;
-  } else if (mode === "weekly" && data?.range) {
-    mainLabel = `${data.range.start} → ${data.range.end}`;
-  } else if (mode === "monthly" && data?.range) {
-    mainLabel = `${data.range.start} → ${data.range.end}`;
-  } else if (mode === "yearly" && data?.range) {
+  } else if (data?.range) {
     mainLabel = `${data.range.start} → ${data.range.end}`;
   }
+
+  const locations = data?.locations || [];
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -328,13 +327,11 @@ function HourlyHeatmap() {
             </div>
           </div>
 
-          {hasComparison && (
-            <ComparisonCard data={data} />
-          )}
+          {hasComparison && <ComparisonCard data={data} mode={mode} />}
         </div>
       )}
 
-      {/* Hourly table */}
+      {/* Hourly all-location table */}
       {data && (
         <div>
           <div
@@ -345,7 +342,7 @@ function HourlyHeatmap() {
             }}
           >
             Hourly profile (5 AM – 8 PM, all locations)
-            {hasComparison && " · Compared to previous week same day"}
+            {hasComparison && " · Compared to previous period"}
           </div>
 
           <div
@@ -540,7 +537,8 @@ function HourlyHeatmap() {
                                   : "#e5e7eb",
                             }}
                           >
-                            {prevTotal === 0 && bucket.totalAllLocations === 0
+                            {prevTotal === 0 &&
+                            bucket.totalAllLocations === 0
                               ? "—"
                               : `${diffPct > 0 ? "+" : ""}${diffPct.toFixed(
                                   1
@@ -571,34 +569,165 @@ function HourlyHeatmap() {
           </div>
         </div>
       )}
+
+      {/* Per-store breakdown */}
+      {data && locations.length > 0 && (
+        <div style={{ marginTop: 16 }}>
+          <div
+            style={{
+              fontSize: 13,
+              color: "#9ca3af",
+              marginBottom: 4,
+            }}
+          >
+            Per-store hourly breakdown (sales per location)
+          </div>
+
+          <div
+            style={{
+              overflowX: "auto",
+              borderRadius: 10,
+              border: "1px solid #111827",
+            }}
+          >
+            <table
+              style={{
+                width: "100%",
+                borderCollapse: "collapse",
+                fontSize: 12,
+                minWidth: 600,
+              }}
+            >
+              <thead>
+                <tr
+                  style={{
+                    background:
+                      "linear-gradient(to right, #020617, #020617, #020617)",
+                  }}
+                >
+                  <th
+                    style={{
+                      textAlign: "left",
+                      padding: 8,
+                      borderBottom: "1px solid #111827",
+                    }}
+                  >
+                    Hour
+                  </th>
+                  {locations.map((loc) => (
+                    <th
+                      key={loc.id}
+                      style={{
+                        textAlign: "right",
+                        padding: 8,
+                        borderBottom: "1px solid #111827",
+                      }}
+                    >
+                      {loc.name}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {hourly.map((bucket) => (
+                  <tr key={bucket.hour}>
+                    <td
+                      style={{
+                        padding: 8,
+                        borderBottom: "1px solid #0b1120",
+                      }}
+                    >
+                      {buildHourLabel(bucket.hour)}
+                    </td>
+                    {locations.map((loc) => {
+                      const val =
+                        bucket.totalsByLocation?.[loc.id] != null
+                          ? bucket.totalsByLocation[loc.id]
+                          : 0;
+                      return (
+                        <td
+                          key={loc.id}
+                          style={{
+                            padding: 8,
+                            borderBottom: "1px solid #0b1120",
+                            textAlign: "right",
+                            color: val === 0 ? "#4b5563" : "#e5e7eb",
+                          }}
+                        >
+                          {val === 0 ? "—" : `$${val.toFixed(2)}`}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+                {hourly.length === 0 && (
+                  <tr>
+                    <td
+                      colSpan={1 + locations.length}
+                      style={{
+                        padding: 8,
+                        textAlign: "center",
+                        color: "#6b7280",
+                      }}
+                    >
+                      No data.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-// Small card to show comparison totals for daily mode
-function ComparisonCard({ data }) {
+function ComparisonCard({ data, mode }) {
   const comp = data.comparison;
   if (!comp) return null;
 
-  const todayTotal = data.totalAllLocations || 0;
+  const thisTotal = data.totalAllLocations || 0;
   const prevTotal = comp.totalAllLocations || 0;
-  const diff = todayTotal - prevTotal;
+  const diff = thisTotal - prevTotal;
   const diffPct =
-    prevTotal > 0 ? (diff / prevTotal) * 100 : todayTotal > 0 ? 100 : 0;
+    prevTotal > 0 ? (diff / prevTotal) * 100 : thisTotal > 0 ? 100 : 0;
+
+  let title;
+  if (mode === "daily") title = "VS LAST WEEK (same weekday)";
+  else if (mode === "weekly") title = "VS PREVIOUS WEEK";
+  else if (mode === "monthly") title = "VS PREVIOUS MONTH";
+  else if (mode === "yearly") title = "VS PREVIOUS YEAR";
+  else title = "VS PREVIOUS PERIOD";
+
+  let currentLabel;
+  let prevLabel;
+
+  if (mode === "daily") {
+    currentLabel = data.includeDate || data.date;
+    prevLabel = comp.includeDate;
+  } else {
+    currentLabel = data.range
+      ? `${data.range.start} → ${data.range.end}`
+      : "Current period";
+    prevLabel = comp.range
+      ? `${comp.range.start} → ${comp.range.end}`
+      : "Previous period";
+  }
 
   return (
     <div
       style={{
-        flex: "1 1 200px",
+        flex: "1 1 220px",
         padding: 12,
         borderRadius: 12,
         border: "1px solid #1f2937",
         background: "rgba(15,23,42,0.9)",
       }}
     >
-      <div style={{ fontSize: 11, color: "#9ca3af" }}>VS LAST WEEK</div>
-      <div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>
-        {comp.includeDate}
+      <div style={{ fontSize: 11, color: "#9ca3af" }}>{title}</div>
+      <div style={{ fontSize: 11, color: "#6b7280", marginTop: 2 }}>
+        {prevLabel}
       </div>
 
       <div
@@ -628,7 +757,7 @@ function ComparisonCard({ data }) {
       </div>
 
       <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
-        Total sales difference for the full day.
+        Current: {currentLabel}
       </div>
     </div>
   );

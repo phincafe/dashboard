@@ -5,41 +5,44 @@ import { DateTime } from "luxon";
 import { SquareClient, SquareEnvironment, SquareError } from "square";
 import { registerHourlyRoutes } from "./hourlyRoutes.js";
 import { registerItemRoutes } from "./itemsRoutes.js";
+import { SquareClient, SquareEnvironment, SquareError } from "square";
+import dotenv from "dotenv";
 
 dotenv.config();
 
-// --- Square client (v43.2.0) ---
 const rawEnv = (process.env.SQUARE_ENVIRONMENT || "sandbox").toLowerCase();
-const environment =
+const envEnum =
   rawEnv === "production"
     ? SquareEnvironment.Production
     : SquareEnvironment.Sandbox;
 
-const token = process.env.SQUARE_ACCESS_TOKEN || "";
+const sqToken = process.env.SQUARE_ACCESS_TOKEN || "";
 
+console.log("=== SQUARE CONFIG ===");
 console.log("SQUARE_ENVIRONMENT =", rawEnv);
 console.log(
-  "Using Square env:",
-  environment === SquareEnvironment.Production ? "PRODUCTION" : "SANDBOX"
+  "Using SquareEnvironment:",
+  envEnum === SquareEnvironment.Production ? "PRODUCTION" : "SANDBOX"
 );
 console.log(
   "SQUARE_ACCESS_TOKEN present?",
-  token ? "YES, length=" + token.length : "NO"
+  sqToken ? "YES, length=" + sqToken.length : "NO"
 );
 console.log(
   "SQUARE_ACCESS_TOKEN prefix:",
-  token ? token.slice(0, 6) + "..." : "MISSING"
+  sqToken ? sqToken.slice(0, 8) + "..." : "MISSING"
 );
+console.log("=====================");
 
-if (!token) {
+if (!sqToken) {
   throw new Error("Missing SQUARE_ACCESS_TOKEN env var");
 }
 
 const client = new SquareClient({
-  // ✅ for square@43.2.0 this MUST be accessToken
-  accessToken: token,
-  environment,
+  token: sqToken,
+  environment: envEnum,
 });
+
 
 
 

@@ -8,14 +8,22 @@ import { registerItemRoutes } from "./itemsRoutes.js";
 
 dotenv.config();
 
+// Decide environment from SQUARE_ENVIRONMENT (production / sandbox)
+const isProd =
+  (process.env.SQUARE_ENVIRONMENT || "").toLowerCase() === "production";
+
+console.log("SQUARE_ENVIRONMENT =", process.env.SQUARE_ENVIRONMENT);
+console.log("Using Square env:", isProd ? "PRODUCTION" : "SANDBOX");
+console.log("Has SQUARE_ACCESS_TOKEN?", !!process.env.SQUARE_ACCESS_TOKEN);
+
 // --- Square client ---
 const client = new SquareClient({
-  token: process.env.SQUARE_ACCESS_TOKEN,
-  environment:
-    (process.env.SQUARE_ENV || "sandbox").toLowerCase() === "production"
-      ? SquareEnvironment.Production
-      : SquareEnvironment.Sandbox,
+  accessToken: process.env.SQUARE_ACCESS_TOKEN, // ✅ correct key
+  environment: isProd
+    ? SquareEnvironment.Production
+    : SquareEnvironment.Sandbox,
 });
+
 
 // --- Express app ---
 const app = express();

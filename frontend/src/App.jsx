@@ -1,11 +1,10 @@
 import React, { useState } from "react";
 import HourlyHeatmap from "./components/HourlyHeatmap";
-import ItemSales from "./components/ItemSales";
 import DailySales from "./components/DailySales";
 import WeeklySales from "./components/WeeklySales";
 import MonthlySales from "./components/MonthlySales";
 import YearlySales from "./components/YearlySales";
-import ItemSalesExplorer from './components/ItemSalesExplorer'
+import ItemSalesExplorer from "./components/ItemSalesExplorer";
 
 export const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
@@ -16,8 +15,7 @@ const TABS = [
   { id: "monthly", label: "Monthly" },
   { id: "yearly", label: "Yearly" },
   { id: "hourly", label: "Hourly Heatmap" },
-  {activeTab === 'items' && <ItemSalesExplorer />},
-
+  { id: "items", label: "Items Explorer" }, // 🔹 new tab
 ];
 
 function App() {
@@ -76,7 +74,7 @@ function App() {
         {activeTab === "monthly" && <MonthlySales />}
         {activeTab === "yearly" && <YearlySales />}
         {activeTab === "hourly" && <HourlyHeatmap />}
-        {activeTab === "items" && <ItemSales />}
+        {activeTab === "items" && <ItemSalesExplorer />} {/* 🔹 use explorer */}
       </section>
 
       <footer style={{ marginTop: 24, fontSize: 12, color: "#6b7280" }}>

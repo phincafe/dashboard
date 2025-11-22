@@ -1,3 +1,4 @@
+// src/components/HourlyHeatmap.jsx
 import React, { useState } from "react";
 import { API_BASE_URL } from "../App";
 
@@ -22,15 +23,60 @@ function HourlyHeatmap() {
   const [error, setError] = useState("");
   const [data, setData] = useState(null);
 
+  // AI insight states (for hourly)
+  const [aiInsights, setAiInsights] = useState("");
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState("");
+
+  // Call backend AI hourly insight (daily only)
+  async function fetchHourlyInsights(dateStr, locationIdValue) {
+    const loc = locationIdValue || "ALL";
+
+    setAiLoading(true);
+    setAiError("");
+    setAiInsights("");
+
+    try {
+      const url = new URL("/api/hourly/insights", API_BASE_URL);
+      url.searchParams.set("date", dateStr);
+      if (loc !== "ALL") {
+        url.searchParams.set("locationId", loc);
+      }
+
+      const res = await fetch(url.toString(), {
+        headers: {
+          "Content-Type": "application/json",
+          "x-passcode": "7238",
+        },
+      });
+
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || "Failed to load hourly insights");
+      }
+
+      const json = await res.json();
+      setAiInsights(json.insights || "");
+    } catch (err) {
+      setAiError(err.message || "Error loading hourly insights");
+    } finally {
+      setAiLoading(false);
+    }
+  }
+
   async function fetchData() {
     setLoading(true);
     setError("");
+
     try {
       let url;
+      let dateForInsights = null; // only used for daily AI
+
       if (mode === "daily") {
         url = new URL("/api/sales/hourly", API_BASE_URL);
         url.searchParams.set("date", dailyDate);
         url.searchParams.set("comparePrev", "true");
+        dateForInsights = dailyDate;
       } else if (mode === "weekly") {
         url = new URL("/api/sales/hourly/weekly", API_BASE_URL);
         url.searchParams.set("week", weeklyDate);
@@ -48,7 +94,7 @@ function HourlyHeatmap() {
       const res = await fetch(url.toString(), {
         headers: {
           "Content-Type": "application/json",
-          "x-passcode": "7238", // your passcode
+          "x-passcode": "7238",
         },
       });
 
@@ -59,9 +105,22 @@ function HourlyHeatmap() {
 
       const json = await res.json();
       setData(json);
+
+      // Only run AI insights for DAILY mode (since /api/hourly/insights is daily)
+      if (mode === "daily" && dateForInsights) {
+        await fetchHourlyInsights(dateForInsights, "ALL");
+      } else {
+        // Clear AI card for non-daily modes
+        setAiInsights("");
+        setAiError("");
+        setAiLoading(false);
+      }
     } catch (err) {
       setError(err.message || "Error loading hourly sales");
       setData(null);
+      setAiInsights("");
+      setAiError("");
+      setAiLoading(false);
     } finally {
       setLoading(false);
     }
@@ -91,6 +150,7 @@ function HourlyHeatmap() {
   }
 
   const hasComparison = !!data?.comparison;
+  const locations = data?.locations || [];
 
   // Header label for current period
   let mainLabel = "";
@@ -99,8 +159,6 @@ function HourlyHeatmap() {
   } else if (data?.range) {
     mainLabel = `${data.range.start} → ${data.range.end}`;
   }
-
-  const locations = data?.locations || [];
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -328,6 +386,55 @@ function HourlyHeatmap() {
           </div>
 
           {hasComparison && <ComparisonCard data={data} mode={mode} />}
+        </div>
+      )}
+
+      {/* AI Insights card (daily mode only) */}
+      {data && mode === "daily" && (
+        <div
+          style={{
+            borderRadius: 12,
+            border: "1px solid #1f2937",
+            padding: 10,
+            background: "rgba(15,23,42,0.95)",
+            marginBottom: 4,
+          }}
+        >
+          <div
+            style={{
+              fontSize: 13,
+              fontWeight: 600,
+              marginBottom: 4,
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+            }}
+          >
+            <span>AI Insights (Hourly)</span>
+            <span style={{ fontSize: 11, color: "#6b7280" }}>
+              All locations · {data.date || dailyDate}
+            </span>
+          </div>
+
+          {aiLoading && (
+            <div style={{ fontSize: 12, color: "#9ca3af" }}>
+              Analyzing hourly pattern…
+            </div>
+          )}
+
+          {aiError && (
+            <div style={{ fontSize: 12, color: "#fecaca" }}>{aiError}</div>
+          )}
+
+          {!aiLoading && !aiError && aiInsights && (
+            <div style={{ fontSize: 12, color: "#e5e7eb" }}>{aiInsights}</div>
+          )}
+
+          {!aiLoading && !aiError && !aiInsights && (
+            <div style={{ fontSize: 12, color: "#6b7280" }}>
+              Load a day to see AI insights.
+            </div>
+          )}
         </div>
       )}
 

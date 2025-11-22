@@ -26,7 +26,7 @@ function HourlyHeatmap() {
       const res = await fetch(url.toString(), {
         headers: {
           'Content-Type': 'application/json',
-          // 'x-passcode': 'mysecret',
+          'x-passcode': '7238',
         },
       })
 

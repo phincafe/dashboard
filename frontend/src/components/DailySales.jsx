@@ -18,16 +18,10 @@ function DailySales() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [data, setData] = useState(null);
-  const [aiLoading, setAiLoading] = useState(false);
-  const [aiError, setAiError] = useState("");
-  const [aiInsight, setAiInsight] = useState("");
 
   async function fetchDaily() {
     setLoading(true);
     setError("");
-    setAiInsight("");
-    setAiError("");
-
     try {
       const url = new URL("/api/sales", API_BASE_URL);
       url.searchParams.set("date", date);
@@ -35,8 +29,8 @@ function DailySales() {
       const res = await fetch(url.toString(), {
         headers: {
           "Content-Type": "application/json",
-          // If you're using BASIC_AUTH_PASSCODE, uncomment:
-          // "x-passcode": "yourpasscode",
+          // If you set BASIC_AUTH_PASSCODE in backend:
+          // "x-passcode": "your-passcode-here",
         },
       });
 
@@ -55,42 +49,10 @@ function DailySales() {
     }
   }
 
-  async function fetchAiInsight() {
-    if (!data) return;
-    setAiLoading(true);
-    setAiError("");
-    setAiInsight("");
-
-    try {
-      const url = new URL("/api/sales/insights/daily", API_BASE_URL);
-      url.searchParams.set("date", date);
-
-      const res = await fetch(url.toString(), {
-        headers: {
-          "Content-Type": "application/json",
-          // "x-passcode": "yourpasscode",
-        },
-      });
-
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || "Failed to fetch AI insights");
-      }
-
-      const json = await res.json();
-      setAiInsight(json.insights || "");
-    } catch (err) {
-      setAiError(err.message || "Error getting AI insight");
-    } finally {
-      setAiLoading(false);
-    }
-  }
-
   const locations = data?.locations || [];
-  const numLocations = locations.length || 0;
-  const avgOrderValue =
-    data && data.total && data.orderCount
-      ? data.total / data.orderCount
+  const avgOrderChain =
+    data && data.grandTotal && data.grandCount
+      ? data.grandTotal / data.grandCount
       : null;
 
   return (
@@ -137,23 +99,6 @@ function DailySales() {
         >
           {loading ? "Loading…" : "Load daily sales"}
         </button>
-        <button
-          onClick={fetchAiInsight}
-          disabled={!data || aiLoading}
-          style={{
-            padding: "8px 16px",
-            borderRadius: 999,
-            border: "1px solid #4c1d95",
-            background: "rgba(76,29,149,0.3)",
-            color: "#e5e7eb",
-            fontWeight: 500,
-            cursor: data ? "pointer" : "not-allowed",
-            fontSize: 14,
-            opacity: !data || aiLoading ? 0.6 : 1,
-          }}
-        >
-          {aiLoading ? "Thinking…" : "AI analysis"}
-        </button>
       </div>
 
       {/* Errors */}
@@ -171,28 +116,15 @@ function DailySales() {
           {error}
         </div>
       )}
-      {aiError && (
-        <div
-          style={{
-            padding: 8,
-            borderRadius: 8,
-            background: "rgba(220,38,38,0.2)",
-            border: "1px solid rgba(220,38,38,0.6)",
-            color: "#fecaca",
-            fontSize: 13,
-          }}
-        >
-          {aiError}
-        </div>
-      )}
 
-      {/* Summary + AI insight */}
+      {/* Data */}
       {data && (
         <>
+          {/* Summary cards */}
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))",
+              gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))",
               gap: 12,
             }}
           >
@@ -208,7 +140,7 @@ function DailySales() {
               <div style={{ fontSize: 12, color: "#9ca3af" }}>Date</div>
               <div style={{ fontSize: 16, fontWeight: 600 }}>{data.date}</div>
               <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
-                Timezone: {data.timezone}
+                TZ: {data.timezone}
               </div>
             </div>
 
@@ -222,10 +154,10 @@ function DailySales() {
             >
               <div style={{ fontSize: 12, color: "#9ca3af" }}>Total sales</div>
               <div style={{ fontSize: 20, fontWeight: 700 }}>
-                {formatCurrency(data.total)}
+                {data.grandTotalFormatted}
               </div>
               <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
-                Gross across all locations
+                Across all locations
               </div>
             </div>
 
@@ -239,10 +171,10 @@ function DailySales() {
             >
               <div style={{ fontSize: 12, color: "#9ca3af" }}>Orders</div>
               <div style={{ fontSize: 20, fontWeight: 700 }}>
-                {data.orderCount ?? "-"}
+                {data.grandCount ?? "-"}
               </div>
               <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
-                Avg value: {formatCurrency(avgOrderValue)} / order
+                Avg ticket: {formatCurrency(avgOrderChain)}
               </div>
             </div>
 
@@ -256,42 +188,15 @@ function DailySales() {
             >
               <div style={{ fontSize: 12, color: "#9ca3af" }}>Locations</div>
               <div style={{ fontSize: 20, fontWeight: 700 }}>
-                {numLocations}
+                {data.locationsCount}
               </div>
               <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
-                Active Square locations in this seller account
+                With at least 1 payment
               </div>
             </div>
           </div>
 
-          {aiInsight && (
-            <div
-              style={{
-                marginTop: 12,
-                padding: 12,
-                borderRadius: 12,
-                border: "1px solid #1f2937",
-                background: "rgba(15,23,42,0.9)",
-                fontSize: 13,
-                lineHeight: 1.5,
-              }}
-            >
-              <div
-                style={{
-                  fontSize: 11,
-                  color: "#9ca3af",
-                  textTransform: "uppercase",
-                  letterSpacing: 0.12,
-                  marginBottom: 4,
-                }}
-              >
-                AI analysis
-              </div>
-              <div>{aiInsight}</div>
-            </div>
-          )}
-
-          {/* Locations list */}
+          {/* Locations table/cards */}
           <div style={{ marginTop: 16 }}>
             <div
               style={{
@@ -300,97 +205,77 @@ function DailySales() {
                 marginBottom: 6,
               }}
             >
-              Locations ({numLocations})
+              Per-location daily performance
             </div>
 
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+                gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
                 gap: 10,
               }}
             >
-              {locations.map((loc) => (
-                <div
-                  key={loc.id}
-                  style={{
-                    padding: 10,
-                    borderRadius: 12,
-                    border: "1px solid #111827",
-                    background:
-                      "linear-gradient(135deg, #020617 0%, #020617 60%, #020617 100%)",
-                  }}
-                >
+              {locations.map((loc) => {
+                const avg =
+                  loc.total && loc.count ? loc.total / loc.count : null;
+                return (
                   <div
+                    key={loc.locationId}
                     style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "center",
-                      gap: 8,
+                      padding: 10,
+                      borderRadius: 12,
+                      border: "1px solid #111827",
+                      background:
+                        "linear-gradient(135deg, #020617 0%, #020617 60%, #020617 100%)",
                     }}
                   >
                     <div
                       style={{
-                        fontSize: 14,
-                        fontWeight: 600,
-                        color: "#e5e7eb",
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        gap: 8,
                       }}
                     >
-                      {loc.name}
+                      <div
+                        style={{
+                          fontSize: 14,
+                          fontWeight: 600,
+                          color: "#e5e7eb",
+                        }}
+                      >
+                        {loc.locationName}
+                      </div>
                     </div>
-                    <span
-                      style={{
-                        fontSize: 11,
-                        padding: "2px 8px",
-                        borderRadius: 999,
-                        border: "1px solid #1f2937",
-                        background:
-                          loc.status === "ACTIVE"
-                            ? "rgba(34,197,94,0.12)"
-                            : "rgba(148,163,184,0.12)",
-                        color:
-                          loc.status === "ACTIVE" ? "#bbf7d0" : "#e5e7eb",
-                      }}
-                    >
-                      {loc.status}
-                    </span>
-                  </div>
-                  <div
-                    style={{
-                      fontSize: 12,
-                      color: "#9ca3af",
-                      marginTop: 4,
-                    }}
-                  >
-                    {loc.address?.addressLine1}
-                    {", "}
-                    {loc.address?.locality}, {loc.address?.administrativeDistrictLevel1}{" "}
-                    {loc.address?.postalCode}
-                  </div>
-                  {loc.phoneNumber && (
+
                     <div
                       style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        marginTop: 8,
                         fontSize: 12,
-                        color: "#9ca3af",
-                        marginTop: 4,
                       }}
                     >
-                      📞 {loc.phoneNumber}
+                      <div>
+                        <div style={{ color: "#9ca3af" }}>Total</div>
+                        <div style={{ fontWeight: 600 }}>
+                          {loc.totalFormatted}
+                        </div>
+                      </div>
+                      <div>
+                        <div style={{ color: "#9ca3af" }}>Orders</div>
+                        <div style={{ fontWeight: 600 }}>{loc.count}</div>
+                      </div>
+                      <div>
+                        <div style={{ color: "#9ca3af" }}>Avg ticket</div>
+                        <div style={{ fontWeight: 600 }}>
+                          {formatCurrency(avg)}
+                        </div>
+                      </div>
                     </div>
-                  )}
-                  {loc.description && (
-                    <div
-                      style={{
-                        fontSize: 12,
-                        color: "#e5e7eb",
-                        marginTop: 6,
-                      }}
-                    >
-                      {loc.description}
-                    </div>
-                  )}
-                </div>
-              ))}
+                  </div>
+                );
+              })}
 
               {locations.length === 0 && (
                 <div
@@ -399,7 +284,7 @@ function DailySales() {
                     color: "#6b7280",
                   }}
                 >
-                  No locations returned from Square.
+                  No locations in this report.
                 </div>
               )}
             </div>

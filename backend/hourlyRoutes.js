@@ -138,6 +138,65 @@ export function registerHourlyRoutes(app, client) {
       });
     }
   });
+  /**
+   * YEARLY HOURLY: /api/sales/hourly/yearly?year=YYYY
+   * Aggregates that entire calendar year into an hourly profile.
+   */
+  app.get("/api/sales/hourly/yearly", async (req, res) => {
+    const yearStr = req.query.year;
+    const timezone = process.env.STORE_TIMEZONE || "America/Los_Angeles";
+
+    if (!yearStr) {
+      return res.status(400).json({ error: "Missing year=YYYY" });
+    }
+
+    try {
+      const start = DateTime.fromISO(yearStr + "-01-01", {
+        zone: timezone,
+      }).startOf("year");
+      if (!start.isValid) {
+        return res.status(400).json({ error: "Invalid year format" });
+      }
+      const end = start.endOf("year");
+
+      const locationsResp = await client.locations.list();
+      const locationsRaw = locationsResp.locations || [];
+      const locations = locationsRaw.map((loc) => ({
+        id: loc.id,
+        name: loc.name || loc.id,
+      }));
+
+      const summary = await buildHourlySummaryForRange(
+        start,
+        end,
+        timezone,
+        client,
+        locations
+      );
+
+      res.json({
+        ...summary,
+        type: "yearly",
+        range: {
+          start: start.toISODate(),
+          end: end.toISODate(),
+        },
+      });
+    } catch (err) {
+      console.error("Error fetching hourly sales (yearly):", err);
+
+      if (err instanceof SquareError) {
+        return res.status(502).json({
+          error: "Square API error",
+          details: err.body,
+        });
+      }
+
+      res.status(500).json({
+        error: "Unexpected server error",
+      });
+    }
+  });
 
   /**
    * MONTHLY HOURLY: /api/sales/hourly/monthly?month=YYYY-MM

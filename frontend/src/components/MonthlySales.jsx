@@ -2,10 +2,10 @@
 import React, { useState } from "react";
 import { API_BASE_URL } from "../App";
 
-const current = new Date();
-const defaultMonth = `${current.getFullYear()}-${String(
-  current.getMonth() + 1
-).padStart(2, "0")}`; // YYYY-MM
+const now = new Date();
+const thisMonthDefault = `${now.getFullYear()}-${String(
+  now.getMonth() + 1
+).padStart(2, "0")}`;
 
 function formatCurrency(v) {
   if (v == null || Number.isNaN(v)) return "-";
@@ -16,46 +16,94 @@ function formatCurrency(v) {
   });
 }
 
+function percentChange(current, previous) {
+  if (previous === 0 || previous == null) return null;
+  return ((current - previous) / previous) * 100;
+}
+
 function MonthlySales() {
-  const [month, setMonth] = useState(defaultMonth); // YYYY-MM
+  const [month, setMonth] = useState(thisMonthDefault); // YYYY-MM
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [data, setData] = useState(null);
+
+  const [currentMonth, setCurrentMonth] = useState(null);
+  const [prevMonth, setPrevMonth] = useState(null);
+
+  function calcPrevMonthStr(m) {
+    const [yStr, mStr] = m.split("-");
+    const y = parseInt(yStr, 10);
+    const mo = parseInt(mStr, 10);
+    const d = new Date(y, mo - 1, 1);
+    d.setMonth(d.getMonth() - 1);
+    const yy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, "0");
+    return `${yy}-${mm}`;
+  }
 
   async function fetchMonthly() {
     setLoading(true);
     setError("");
+    setCurrentMonth(null);
+    setPrevMonth(null);
+
     try {
-      const url = new URL("/api/sales/monthly", API_BASE_URL);
-      url.searchParams.set("month", month);
+      // current month
+      const curUrl = new URL("/api/sales/monthly", API_BASE_URL);
+      curUrl.searchParams.set("month", month);
 
-      const res = await fetch(url.toString(), {
-        headers: {
-          "Content-Type": "application/json",
-          // "x-passcode": "your-passcode-here",
-        },
+      const curRes = await fetch(curUrl.toString(), {
+        headers: { "Content-Type": "application/json" },
       });
-
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
+      if (!curRes.ok) {
+        const body = await curRes.json().catch(() => ({}));
         throw new Error(body.error || "Failed to fetch monthly sales");
       }
+      const curJson = await curRes.json();
+      setCurrentMonth(curJson);
 
-      const json = await res.json();
-      setData(json);
+      // previous month
+      const prevStr = calcPrevMonthStr(month);
+      const prevUrl = new URL("/api/sales/monthly", API_BASE_URL);
+      prevUrl.searchParams.set("month", prevStr);
+
+      const prevRes = await fetch(prevUrl.toString(), {
+        headers: { "Content-Type": "application/json" },
+      });
+      if (prevRes.ok) {
+        const prevJson = await prevRes.json();
+        setPrevMonth(prevJson);
+      } else {
+        setPrevMonth(null);
+      }
     } catch (err) {
+      console.error(err);
       setError(err.message || "Error loading monthly sales");
-      setData(null);
+      setCurrentMonth(null);
+      setPrevMonth(null);
     } finally {
       setLoading(false);
     }
   }
 
-  const locations = data?.locations || [];
-  const avgOrderChain =
-    data && data.grandTotal && data.grandCount
-      ? data.grandTotal / data.grandCount
+  const locations = currentMonth?.locations || [];
+  const avgOrder =
+    currentMonth && currentMonth.grandTotal && currentMonth.grandCount
+      ? currentMonth.grandTotal / currentMonth.grandCount
       : null;
+
+  const prevTotal = prevMonth?.grandTotal ?? null;
+  const pct =
+    currentMonth?.grandTotal != null && prevTotal != null
+      ? percentChange(currentMonth.grandTotal, prevTotal)
+      : null;
+  const isUp = pct != null && pct >= 0;
+
+  const currentRangeLabel = currentMonth
+    ? `${currentMonth.range.start} → ${currentMonth.range.end}`
+    : null;
+  const prevRangeLabel = prevMonth
+    ? `${prevMonth.range.start} → ${prevMonth.range.end}`
+    : null;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -103,7 +151,7 @@ function MonthlySales() {
         </button>
       </div>
 
-      {/* Errors */}
+      {/* Error */}
       {error && (
         <div
           style={{
@@ -120,16 +168,17 @@ function MonthlySales() {
       )}
 
       {/* Data */}
-      {data && (
+      {currentMonth && (
         <>
           {/* Summary */}
           <div
             style={{
               display: "grid",
-              gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))",
+              gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
               gap: 12,
             }}
           >
+            {/* Range card */}
             <div
               style={{
                 padding: 12,
@@ -139,15 +188,16 @@ function MonthlySales() {
                   "radial-gradient(circle at top, #0f172a, #020617 70%)",
               }}
             >
-              <div style={{ fontSize: 12, color: "#9ca3af" }}>Range</div>
-              <div style={{ fontSize: 16, fontWeight: 600 }}>
-                {data.range?.start} → {data.range?.end}
+              <div style={{ fontSize: 12, color: "#9ca3af" }}>Month range</div>
+              <div style={{ fontSize: 15, fontWeight: 600 }}>
+                {currentRangeLabel}
               </div>
               <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
-                Type: {data.type}
+                TZ: {currentMonth.timezone}
               </div>
             </div>
 
+            {/* Total */}
             <div
               style={{
                 padding: 12,
@@ -158,13 +208,14 @@ function MonthlySales() {
             >
               <div style={{ fontSize: 12, color: "#9ca3af" }}>Total sales</div>
               <div style={{ fontSize: 20, fontWeight: 700 }}>
-                {data.grandTotalFormatted}
+                {currentMonth.grandTotalFormatted}
               </div>
               <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
-                All locations this month
+                Across all locations
               </div>
             </div>
 
+            {/* Orders */}
             <div
               style={{
                 padding: 12,
@@ -175,15 +226,77 @@ function MonthlySales() {
             >
               <div style={{ fontSize: 12, color: "#9ca3af" }}>Orders</div>
               <div style={{ fontSize: 20, fontWeight: 700 }}>
-                {data.grandCount ?? "-"}
+                {currentMonth.grandCount ?? "-"}
               </div>
               <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
-                Avg ticket: {formatCurrency(avgOrderChain)}
+                Avg ticket: {formatCurrency(avgOrder)}
               </div>
+            </div>
+
+            {/* Locations */}
+            <div
+              style={{
+                padding: 12,
+                borderRadius: 12,
+                border: "1px solid #6b21a8",
+                background: "rgba(147,51,234,0.12)",
+              }}
+            >
+              <div style={{ fontSize: 12, color: "#9ca3af" }}>Locations</div>
+              <div style={{ fontSize: 20, fontWeight: 700 }}>
+                {currentMonth.locationsCount ?? locations.length}
+              </div>
+              <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
+                With at least 1 payment
+              </div>
+            </div>
+
+            {/* Comparison card */}
+            <div
+              style={{
+                padding: 12,
+                borderRadius: 12,
+                border: "1px solid #4b5563",
+                background: "rgba(75,85,99,0.16)",
+              }}
+            >
+              <div style={{ fontSize: 12, color: "#9ca3af" }}>
+                Vs previous month
+              </div>
+              {prevTotal == null ? (
+                <div style={{ fontSize: 12, color: "#6b7280", marginTop: 4 }}>
+                  No data for previous month.
+                </div>
+              ) : (
+                <>
+                  <div
+                    style={{
+                      fontSize: 14,
+                      marginTop: 4,
+                      color: "#e5e7eb",
+                    }}
+                  >
+                    {formatCurrency(prevTotal)} from {prevRangeLabel}
+                  </div>
+                  {pct != null && (
+                    <div
+                      style={{
+                        marginTop: 4,
+                        fontSize: 13,
+                        fontWeight: 600,
+                        color: isUp ? "#4ade80" : "#fb7185",
+                      }}
+                    >
+                      {isUp ? "▲" : "▼"}{" "}
+                      {Math.abs(pct).toFixed(1)}% vs previous month
+                    </div>
+                  )}
+                </>
+              )}
             </div>
           </div>
 
-          {/* Locations */}
+          {/* Per-location */}
           <div style={{ marginTop: 16 }}>
             <div
               style={{
@@ -192,7 +305,7 @@ function MonthlySales() {
                 marginBottom: 6,
               }}
             >
-              Monthly totals by location
+              Per-location monthly performance
             </div>
 
             <div
@@ -218,12 +331,21 @@ function MonthlySales() {
                   >
                     <div
                       style={{
-                        fontSize: 14,
-                        fontWeight: 600,
-                        color: "#e5e7eb",
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        gap: 8,
                       }}
                     >
-                      {loc.locationName}
+                      <div
+                        style={{
+                          fontSize: 14,
+                          fontWeight: 600,
+                          color: "#e5e7eb",
+                        }}
+                      >
+                        {loc.locationName}
+                      </div>
                     </div>
 
                     <div
@@ -242,7 +364,9 @@ function MonthlySales() {
                       </div>
                       <div>
                         <div style={{ color: "#9ca3af" }}>Orders</div>
-                        <div style={{ fontWeight: 600 }}>{loc.count}</div>
+                        <div style={{ fontWeight: 600 }}>
+                          {loc.count ?? "-"}
+                        </div>
                       </div>
                       <div>
                         <div style={{ color: "#9ca3af" }}>Avg ticket</div>

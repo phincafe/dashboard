@@ -6,6 +6,13 @@ import { SquareClient, SquareEnvironment, SquareError } from "square";
 import { registerHourlyRoutes } from "./hourlyRoutes.js";
 import { registerItemRoutes } from "./itemsRoutes.js";
 
+// At the top of index.js
+import OpenAI from "openai";
+const openai = process.env.OPENAI_API_KEY
+  ? new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
+  : null;
+
+
 dotenv.config();
 
 const app = express();
@@ -182,6 +189,70 @@ app.get("/api/sales", async (req, res) => {
   } catch (err) {
     console.error("Error /api/sales", err);
     return res.status(500).json({ error: "Failed to fetch daily sales" });
+  }
+});
+
+
+app.get("/api/sales/insights/daily", async (req, res) => {
+  try {
+    if (!openai) {
+      return res
+        .status(500)
+        .json({ error: "OPENAI_API_KEY not configured on server" });
+    }
+
+    const { date } = req.query;
+    if (!date) {
+      return res.status(400).json({ error: "Missing date" });
+    }
+
+    // Reuse the same daily logic to get the data
+    const { start, end, label } = parseDayRange(date);
+    const locations = await getAllLocations();
+    const locationIds = locations.map((l) => l.id);
+    const summary = await aggregateSales(start, end, locationIds);
+
+    const payloadForAi = {
+      date: label,
+      timezone: storeTimezone,
+      total: summary.total,
+      orderCount: summary.count,
+      locations: locations.map((loc) => ({
+        id: loc.id,
+        name: loc.name,
+        city: loc.address?.locality,
+        openedAt: loc.createdAt,
+        status: loc.status,
+      })),
+    };
+
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4.1-mini",
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are an assistant helping a Vietnamese coffee shop owner understand their Square daily sales.",
+        },
+        {
+          role: "user",
+          content:
+            "Here is the daily sales snapshot JSON. Give a concise, friendly analysis in 3–6 bullet points. Focus on total sales, order volume, average ticket, number of locations, and any obvious trends or suggestions:\n\n" +
+            JSON.stringify(payloadForAi, null, 2),
+        },
+      ],
+      max_tokens: 250,
+      temperature: 0.5,
+    });
+
+    const insights =
+      completion.choices?.[0]?.message?.content ||
+      "I could not generate insights.";
+
+    res.json({ insights });
+  } catch (err) {
+    console.error("Error /api/sales/insights/daily", err);
+    res.status(500).json({ error: "Failed to generate AI insights" });
   }
 });
 

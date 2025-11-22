@@ -451,6 +451,89 @@ export function registerItemRoutes(app, client) {
     }
   });
 
+
+    /**
+   * YEARLY AI-style insights
+   * GET /api/items/insights/yearly?year=YYYY&locationId=optional
+   */
+  app.get("/api/items/insights/yearly", async (req, res) => {
+    const yearStr = req.query.year;
+    const locationId = req.query.locationId || null;
+    const timezone = process.env.STORE_TIMEZONE || "America/Los_Angeles";
+
+    if (!yearStr) {
+      return res.status(400).json({ error: "Missing year=YYYY" });
+    }
+
+    try {
+      const year = parseInt(yearStr, 10);
+      if (isNaN(year) || year < 2000 || year > 2100) {
+        return res.status(400).json({ error: "Invalid year format" });
+      }
+
+      const start = DateTime.fromObject(
+        { year, month: 1, day: 1 },
+        { zone: timezone }
+      ).startOf("year");
+      const end = start.endOf("year");
+
+      const beginTime = start.toUTC().toISO();
+      const endTime = end.toUTC().toISO();
+
+      const agg = await aggregateItemSalesForRange(beginTime, endTime, client);
+
+      let scopeLabel = "All Locations";
+      let itemsForScope = agg.overallItems;
+      let totalForScope = agg.grandTotal;
+
+      if (locationId) {
+        const loc = agg.perLocation.find((l) => l.locationId === locationId);
+        if (!loc) {
+          return res.status(404).json({
+            error: "Location not found in results",
+            locationId,
+          });
+        }
+        scopeLabel = loc.locationName || locationId;
+        itemsForScope = loc.items;
+        totalForScope = loc.total;
+      }
+
+      const dateLabel = `${start.toISODate()} to ${end.toISODate()}`;
+      const insightsText = await buildSimpleInsights({
+        scopeLabel,
+        dateLabel,
+        items: itemsForScope,
+        total: totalForScope,
+      });
+
+      res.json({
+        type: "yearly-insights",
+        year,
+        range: {
+          start: start.toISODate(),
+          end: end.toISODate(),
+        },
+        timezone,
+        scope: {
+          locationId: locationId || "ALL",
+          label: scopeLabel,
+        },
+        grandTotal: totalForScope,
+        grandTotalFormatted: totalForScope.toLocaleString("en-US", {
+          style: "currency",
+          currency: "USD",
+        }),
+        items: itemsForScope,
+        insights: insightsText,
+      });
+    } catch (err) {
+      console.error("Error building yearly item insights:", err);
+      res.status(500).json({ error: "Unexpected server error" });
+    }
+  });
+
+
   // =========================
   // AI-STYLE INSIGHT ENDPOINTS
   // =========================

@@ -5,7 +5,6 @@ import { DateTime } from "luxon";
 import { SquareClient, SquareEnvironment, SquareError } from "square";
 import { registerHourlyRoutes } from "./hourlyRoutes.js";
 import { registerItemRoutes } from "./itemsRoutes.js";
-import { SquareClient, SquareEnvironment, SquareError } from "square";
 import dotenv from "dotenv";
 
 dotenv.config();

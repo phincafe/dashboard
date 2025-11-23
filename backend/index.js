@@ -5,6 +5,7 @@ import { DateTime } from "luxon";
 import { SquareClient, SquareEnvironment, SquareError } from "square";
 import { registerHourlyRoutes } from "./hourlyRoutes.js";
 import { registerItemRoutes } from "./itemsRoutes.js";
+import { registerRefundRoutes } from "./refundsRoutes.js";
 
 
 dotenv.config();
@@ -83,6 +84,7 @@ if (basicPasscode) {
 // Register hourly + item routes (same as old)
 registerHourlyRoutes(app, client);
 registerItemRoutes(app, client);
+registerRefundRoutes(app, client);
 
 const STORE_TZ = process.env.STORE_TIMEZONE || "America/Los_Angeles";
 

@@ -2,7 +2,7 @@
 import React, { useState } from "react";
 import { API_BASE_URL } from "../App";
 
-const currentYear = new Date().getFullYear();
+const currentYear = new Date().getFullYear().toString();
 
 function formatCurrency(v) {
   if (v == null || Number.isNaN(v)) return "-";
@@ -14,7 +14,7 @@ function formatCurrency(v) {
 }
 
 function YearlyRefunds() {
-  const [year, setYear] = useState(String(currentYear));
+  const [year, setYear] = useState(currentYear);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [data, setData] = useState(null);
@@ -49,10 +49,22 @@ function YearlyRefunds() {
 
   const locations = data?.locations || [];
   const range = data?.range;
-  const grandTotal = data?.grandRefundTotal ?? null;
+
+  // Support both grandRefund* and grandTotal*
+  const grandTotal =
+    data?.grandRefundTotal ??
+    data?.grandTotal ??
+    null;
+
   const grandTotalFormatted =
-    data?.grandRefundTotalFormatted || formatCurrency(grandTotal);
-  const grandCount = data?.grandRefundCount ?? null;
+    data?.grandRefundTotalFormatted ||
+    data?.grandTotalFormatted ||
+    formatCurrency(grandTotal);
+
+  const grandCount =
+    data?.grandRefundCount ??
+    data?.grandCount ??
+    null;
 
   const rangeLabel =
     range?.start && range?.end
@@ -74,18 +86,18 @@ function YearlyRefunds() {
           Year:&nbsp;
           <input
             type="number"
-            min="2020"
-            max={currentYear + 1}
+            min="2000"
+            max="2100"
             value={year}
             onChange={(e) => setYear(e.target.value)}
             style={{
-              width: 100,
               background: "#020617",
               color: "#e5e7eb",
               borderRadius: 6,
               border: "1px solid #374151",
               padding: "6px 8px",
               fontSize: 13,
+              width: 90,
             }}
           />
         </label>
@@ -135,6 +147,7 @@ function YearlyRefunds() {
               gap: 12,
             }}
           >
+            {/* Year range */}
             <div
               style={{
                 padding: 12,
@@ -151,6 +164,7 @@ function YearlyRefunds() {
               </div>
             </div>
 
+            {/* Total refunded */}
             <div
               style={{
                 padding: 12,
@@ -170,6 +184,7 @@ function YearlyRefunds() {
               </div>
             </div>
 
+            {/* Refund count */}
             <div
               style={{
                 padding: 12,
@@ -189,6 +204,7 @@ function YearlyRefunds() {
               </div>
             </div>
 
+            {/* Locations with refunds */}
             <div
               style={{
                 padding: 12,

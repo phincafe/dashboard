@@ -50,6 +50,10 @@ function DailyRefunds() {
   }
 
   const locations = data?.locations || [];
+  const grandTotal = data?.grandRefundTotal ?? null;
+  const grandTotalFormatted =
+    data?.grandRefundTotalFormatted || formatCurrency(grandTotal);
+  const grandCount = data?.grandRefundCount ?? null;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -154,7 +158,7 @@ function DailyRefunds() {
                 Total refunded
               </div>
               <div style={{ fontSize: 20, fontWeight: 700, color: "#fed7aa" }}>
-                {data.grandTotalFormatted || formatCurrency(data.grandTotal)}
+                {grandTotalFormatted}
               </div>
               <div style={{ fontSize: 11, color: "#fdba74", marginTop: 4 }}>
                 Sum of all refunds for the day
@@ -169,9 +173,11 @@ function DailyRefunds() {
                 background: "rgba(248,113,113,0.08)",
               }}
             >
-              <div style={{ fontSize: 12, color: "#fecaca" }}>Refund count</div>
+              <div style={{ fontSize: 12, color: "#fecaca" }}>
+                Refund count
+              </div>
               <div style={{ fontSize: 20, fontWeight: 700, color: "#fecaca" }}>
-                {data.grandCount ?? "-"}
+                {grandCount ?? "-"}
               </div>
               <div style={{ fontSize: 11, color: "#fecaca", marginTop: 4 }}>
                 Number of refund transactions

@@ -50,10 +50,22 @@ function MonthlyRefunds() {
 
   const locations = data?.locations || [];
   const range = data?.range;
-  const grandTotal = data?.grandRefundTotal ?? null;
+
+  // Support both grandRefund* and grandTotal*
+  const grandTotal =
+    data?.grandRefundTotal ??
+    data?.grandTotal ??
+    null;
+
   const grandTotalFormatted =
-    data?.grandRefundTotalFormatted || formatCurrency(grandTotal);
-  const grandCount = data?.grandRefundCount ?? null;
+    data?.grandRefundTotalFormatted ||
+    data?.grandTotalFormatted ||
+    formatCurrency(grandTotal);
+
+  const grandCount =
+    data?.grandRefundCount ??
+    data?.grandCount ??
+    null;
 
   const rangeLabel =
     range?.start && range?.end

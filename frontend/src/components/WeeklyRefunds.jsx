@@ -49,10 +49,22 @@ function WeeklyRefunds() {
 
   const locations = data?.locations || [];
   const range = data?.range;
-  const grandTotal = data?.grandRefundTotal ?? null;
+
+  // ⬇️ NEW: Support both naming schemes (old + new)
+  const grandTotal =
+    data?.grandTotal ??
+    data?.grandRefundTotal ??
+    null;
+
   const grandTotalFormatted =
-    data?.grandRefundTotalFormatted || formatCurrency(grandTotal);
-  const grandCount = data?.grandRefundCount ?? null;
+    data?.grandTotalFormatted ||
+    data?.grandRefundTotalFormatted ||
+    formatCurrency(grandTotal);
+
+  const grandCount =
+    data?.grandCount ??
+    data?.grandRefundCount ??
+    null;
 
   const rangeLabel =
     range?.start && range?.end
@@ -132,6 +144,7 @@ function WeeklyRefunds() {
               gap: 12,
             }}
           >
+            {/* Week Range */}
             <div
               style={{
                 padding: 12,
@@ -148,6 +161,7 @@ function WeeklyRefunds() {
               </div>
             </div>
 
+            {/* Total refunded */}
             <div
               style={{
                 padding: 12,
@@ -167,6 +181,7 @@ function WeeklyRefunds() {
               </div>
             </div>
 
+            {/* Refund count */}
             <div
               style={{
                 padding: 12,
@@ -186,6 +201,7 @@ function WeeklyRefunds() {
               </div>
             </div>
 
+            {/* Locations count */}
             <div
               style={{
                 padding: 12,

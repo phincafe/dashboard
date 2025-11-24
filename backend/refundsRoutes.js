@@ -65,7 +65,6 @@ export function registerRefundRoutes(app, client) {
   /**
    * WEEKLY refunds
    * GET /api/refunds/weekly?week=YYYY-MM-DD
-   *   - week= is any date within the week you want
    */
   app.get("/api/refunds/weekly", async (req, res) => {
     const weekStr = req.query.week;
@@ -105,14 +104,9 @@ export function registerRefundRoutes(app, client) {
       });
     } catch (err) {
       console.error("Error fetching weekly refunds:", err);
-
       if (err instanceof SquareError) {
-        return res.status(502).json({
-          error: "Square API error",
-          details: err.body,
-        });
+        return res.status(502).json({ error: "Square API error", details: err.body });
       }
-
       res.status(500).json({ error: "Unexpected server error" });
     }
   });
@@ -122,16 +116,13 @@ export function registerRefundRoutes(app, client) {
    * GET /api/refunds/monthly?month=YYYY-MM
    */
   app.get("/api/refunds/monthly", async (req, res) => {
-    const monthStr = req.query.month; // YYYY-MM
+    const monthStr = req.query.month;
     if (!monthStr) {
       return res.status(400).json({ error: "Missing month=YYYY-MM" });
     }
 
     try {
-      const start = DateTime.fromISO(monthStr + "-01", {
-        zone: timezone,
-      }).startOf("month");
-
+      const start = DateTime.fromISO(monthStr + "-01", { zone: timezone }).startOf("month");
       if (!start.isValid) {
         return res.status(400).json({ error: "Invalid month format" });
       }
@@ -161,14 +152,9 @@ export function registerRefundRoutes(app, client) {
       });
     } catch (err) {
       console.error("Error fetching monthly refunds:", err);
-
       if (err instanceof SquareError) {
-        return res.status(502).json({
-          error: "Square API error",
-          details: err.body,
-        });
+        return res.status(502).json({ error: "Square API error", details: err.body });
       }
-
       res.status(500).json({ error: "Unexpected server error" });
     }
   });
@@ -178,16 +164,13 @@ export function registerRefundRoutes(app, client) {
    * GET /api/refunds/yearly?year=YYYY
    */
   app.get("/api/refunds/yearly", async (req, res) => {
-    const yearStr = req.query.year; // "2025"
+    const yearStr = req.query.year;
     if (!yearStr) {
       return res.status(400).json({ error: "Missing year=YYYY" });
     }
 
     try {
-      const start = DateTime.fromISO(`${yearStr}-01-01`, {
-        zone: timezone,
-      }).startOf("year");
-
+      const start = DateTime.fromISO(`${yearStr}-01-01`, { zone: timezone }).startOf("year");
       if (!start.isValid) {
         return res.status(400).json({ error: "Invalid year format" });
       }
@@ -217,101 +200,4 @@ export function registerRefundRoutes(app, client) {
       });
     } catch (err) {
       console.error("Error fetching yearly refunds:", err);
-
-      if (err instanceof SquareError) {
-        return res.status(502).json({
-          error: "Square API error",
-          details: err.body,
-        });
-      }
-
-      res.status(500).json({ error: "Unexpected server error" });
-    }
-  });
-}
-
-/**
- * Shared helper: aggregate refunds across a time range (UTC ISO strings)
- * Uses Refunds API across ALL locations, returns:
- *  - grandTotal (sum of refunds, positive dollars)
- *  - grandCount (# of refunds)
- *  - locations[] with { locationId, locationName, count, total, totalFormatted }
- */
-async function aggregateRefundsForRange(beginTime, endTime, client) {
-  // 1) Get all locations for name lookup
-  const locationsResp = await client.locations.list();
-  const locations = locationsResp.locations || [];
-  const locationMap = new Map(
-    locations.map((loc) => [loc.id, loc.name || loc.id])
-  );
-
-  const perLocation = new Map(); // locId -> { locationId, locationName, count, totalCents }
-  let grandTotalCents = 0;
-  let grandCount = 0;
-
-  let cursor = undefined;
-
-  do {
-    const resp = await client.refunds.listPaymentRefunds({
-      beginTime,
-      endTime,
-      sortOrder: "ASC",
-      cursor,
-    });
-
-    const refunds = resp.refunds || [];
-    cursor = resp.cursor;
-
-    for (const ref of refunds) {
-      if (!ref) continue;
-
-      const locId = ref.locationId || "UNKNOWN";
-      const locName = locationMap.get(locId) || locId;
-
-      if (!perLocation.has(locId)) {
-        perLocation.set(locId, {
-          locationId: locId,
-          locationName: locName,
-          count: 0,
-          totalCents: 0,
-        });
-      }
-
-      const bucket = perLocation.get(locId);
-
-      const rawMoney = ref.amountMoney?.amount ?? 0n;
-      const cents =
-        typeof rawMoney === "bigint"
-          ? Number(rawMoney)
-          : Number(rawMoney || 0);
-
-      bucket.count += 1;
-      bucket.totalCents += cents;
-
-      grandCount += 1;
-      grandTotalCents += cents;
-    }
-  } while (cursor);
-
-  const locationsArr = Array.from(perLocation.values()).map((b) => {
-    const total = b.totalCents / 100;
-    return {
-      locationId: b.locationId,
-      locationName: b.locationName,
-      count: b.count,
-      total,
-      totalFormatted: total.toLocaleString("en-US", {
-        style: "currency",
-        currency: "USD",
-      }),
-    };
-  });
-
-  const grandTotal = grandTotalCents / 100;
-
-  return {
-    grandTotal,
-    grandCount,
-    locations: locationsArr,
-  };
-}
+      if (err instanceof SquareE

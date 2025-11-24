@@ -2,7 +2,10 @@
 import React, { useState } from "react";
 import { API_BASE_URL } from "../App";
 
-const todayISO = new Date().toISOString().slice(0, 10);
+const today = new Date();
+const todayISO = today.toISOString().slice(0, 10); // YYYY-MM-DD
+const thisMonth = todayISO.slice(0, 7); // YYYY-MM
+const thisYear = String(today.getFullYear());
 
 function formatCurrency(v) {
   if (v == null || Number.isNaN(v)) return "-";
@@ -13,35 +16,52 @@ function formatCurrency(v) {
   });
 }
 
-function DailyRefunds() {
-  const [date, setDate] = useState(todayISO);
+/**
+ * Shared generic refunds view.
+ * It calls different endpoints depending on props:
+ *  - endpoint: "/api/refunds/daily" | "/api/refunds/weekly" | ...
+ *  - paramName: "date" | "week" | "month" | "year"
+ *  - inputType: "date" | "month" | "number"
+ */
+function RefundsView({
+  mode,
+  endpoint,
+  paramName,
+  inputType,
+  label,
+  initialValue,
+}) {
+  const [value, setValue] = useState(initialValue);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [data, setData] = useState(null);
 
-  async function fetchDailyRefunds() {
+  async function fetchRefunds() {
     setLoading(true);
     setError("");
     try {
-      const url = new URL("/api/refunds", API_BASE_URL);
-      url.searchParams.set("date", date);
+      const url = new URL(endpoint, API_BASE_URL);
+      if (value) {
+        url.searchParams.set(paramName, value);
+      }
 
       const res = await fetch(url.toString(), {
         headers: {
           "Content-Type": "application/json",
-          // "x-passcode": "your-passcode-here" if you use it
+          // If you use BASIC_AUTH on backend, set passcode here:
+          // "x-passcode": "your-passcode-here",
         },
       });
 
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || "Failed to fetch daily refunds");
+        throw new Error(body.error || "Failed to fetch refunds");
       }
 
       const json = await res.json();
       setData(json);
     } catch (err) {
-      setError(err.message || "Error loading daily refunds");
+      setError(err.message || "Error loading refunds");
       setData(null);
     } finally {
       setLoading(false);
@@ -49,10 +69,22 @@ function DailyRefunds() {
   }
 
   const locations = data?.locations || [];
-  const avgRefundPerTxn =
-    data && data.grandTotal && data.grandCount
-      ? data.grandTotal / data.grandCount
-      : null;
+  const grandTotalRefunded = data?.grandTotalRefunded ?? null;
+  const grandTotalRefundedFormatted =
+    data?.grandTotalRefundedFormatted ?? formatCurrency(grandTotalRefunded);
+  const grandCount = data?.grandCount ?? null;
+  const avgRefund =
+    grandTotalRefunded && grandCount ? grandTotalRefunded / grandCount : null;
+
+  // Build a label for the period (date / range / year)
+  let periodLabel = "Selected period";
+  if (data?.date) {
+    periodLabel = data.date;
+  } else if (data?.range?.start && data?.range?.end) {
+    periodLabel = `${data.range.start} → ${data.range.end}`;
+  } else if (data?.year) {
+    periodLabel = String(data.year);
+  }
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -66,11 +98,11 @@ function DailyRefunds() {
         }}
       >
         <label style={{ fontSize: 14 }}>
-          Date:&nbsp;
+          {label}:&nbsp;
           <input
-            type="date"
-            value={date}
-            onChange={(e) => setDate(e.target.value)}
+            type={inputType}
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
             style={{
               background: "#020617",
               color: "#e5e7eb",
@@ -79,10 +111,12 @@ function DailyRefunds() {
               padding: "6px 8px",
               fontSize: 13,
             }}
+            min={inputType === "number" ? "2000" : undefined}
+            max={inputType === "number" ? "2100" : undefined}
           />
         </label>
         <button
-          onClick={fetchDailyRefunds}
+          onClick={fetchRefunds}
           disabled={loading}
           style={{
             padding: "8px 16px",
@@ -96,7 +130,7 @@ function DailyRefunds() {
             opacity: loading ? 0.7 : 1,
           }}
         >
-          {loading ? "Loading…" : "Load daily refunds"}
+          {loading ? "Loading…" : "Load refunds"}
         </button>
       </div>
 
@@ -136,10 +170,18 @@ function DailyRefunds() {
                   "radial-gradient(circle at top, #0f172a, #020617 70%)",
               }}
             >
-              <div style={{ fontSize: 12, color: "#9ca3af" }}>Date</div>
-              <div style={{ fontSize: 16, fontWeight: 600 }}>{data.date}</div>
+              <div style={{ fontSize: 12, color: "#9ca3af" }}>
+                {mode === "daily"
+                  ? "Date"
+                  : mode === "weekly"
+                  ? "Week range"
+                  : mode === "monthly"
+                  ? "Month range"
+                  : "Year"}
+              </div>
+              <div style={{ fontSize: 16, fontWeight: 600 }}>{periodLabel}</div>
               <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
-                TZ: {data.timezone}
+                TZ: {data.timezone || "America/Los_Angeles"}
               </div>
             </div>
 
@@ -148,15 +190,14 @@ function DailyRefunds() {
                 padding: 12,
                 borderRadius: 12,
                 border: "1px solid #b45309",
-                background: "rgba(248,113,113,0.12)",
+                background: "rgba(245,158,11,0.12)",
               }}
             >
               <div style={{ fontSize: 12, color: "#9ca3af" }}>
-                Total refunds
+                Total refunded
               </div>
               <div style={{ fontSize: 20, fontWeight: 700 }}>
-                {/* Show as negative visually */}
-                -{data.grandTotalFormatted}
+                {grandTotalRefundedFormatted}
               </div>
               <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
                 Across all locations
@@ -167,16 +208,18 @@ function DailyRefunds() {
               style={{
                 padding: 12,
                 borderRadius: 12,
-                border: "1px solid #1d4ed8",
-                background: "rgba(37,99,235,0.12)",
+                border: "1px solid #7c2d12",
+                background: "rgba(248,113,113,0.12)",
               }}
             >
-              <div style={{ fontSize: 12, color: "#9ca3af" }}>Refund Txns</div>
+              <div style={{ fontSize: 12, color: "#9ca3af" }}>
+                Refund count
+              </div>
               <div style={{ fontSize: 20, fontWeight: 700 }}>
-                {data.grandCount ?? "-"}
+                {grandCount ?? "-"}
               </div>
               <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
-                Avg refund: {formatCurrency(avgRefundPerTxn)}
+                Avg refund: {formatCurrency(avgRefund)}
               </div>
             </div>
 
@@ -184,13 +227,13 @@ function DailyRefunds() {
               style={{
                 padding: 12,
                 borderRadius: 12,
-                border: "1px solid #6b21a8",
-                background: "rgba(147,51,234,0.12)",
+                border: "1px solid #4b5563",
+                background: "rgba(31,41,55,0.7)",
               }}
             >
               <div style={{ fontSize: 12, color: "#9ca3af" }}>Locations</div>
               <div style={{ fontSize: 20, fontWeight: 700 }}>
-                {data.locationsCount}
+                {locations.length}
               </div>
               <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
                 With at least 1 refund
@@ -198,7 +241,7 @@ function DailyRefunds() {
             </div>
           </div>
 
-          {/* Locations table/cards */}
+          {/* Locations breakdown */}
           <div style={{ marginTop: 16 }}>
             <div
               style={{
@@ -207,7 +250,7 @@ function DailyRefunds() {
                 marginBottom: 6,
               }}
             >
-              Per-location daily refunds
+              Per-location refunds
             </div>
 
             <div
@@ -218,8 +261,11 @@ function DailyRefunds() {
               }}
             >
               {locations.map((loc) => {
-                const avg =
-                  loc.total && loc.count ? loc.total / loc.count : null;
+                const avgLoc =
+                  loc.totalRefunded && loc.count
+                    ? loc.totalRefunded / loc.count
+                    : null;
+
                 return (
                   <div
                     key={loc.locationId}
@@ -259,19 +305,22 @@ function DailyRefunds() {
                       }}
                     >
                       <div>
-                        <div style={{ color: "#9ca3af" }}>Total refunds</div>
+                        <div style={{ color: "#9ca3af" }}>Refunded</div>
                         <div style={{ fontWeight: 600 }}>
-                          -{loc.totalFormatted}
+                          {loc.totalRefundedFormatted ||
+                            formatCurrency(loc.totalRefunded)}
                         </div>
                       </div>
                       <div>
-                        <div style={{ color: "#9ca3af" }}>Refund txns</div>
-                        <div style={{ fontWeight: 600 }}>{loc.count}</div>
+                        <div style={{ color: "#9ca3af" }}>Refunds</div>
+                        <div style={{ fontWeight: 600 }}>
+                          {loc.count ?? "-"}
+                        </div>
                       </div>
                       <div>
                         <div style={{ color: "#9ca3af" }}>Avg refund</div>
                         <div style={{ fontWeight: 600 }}>
-                          -{formatCurrency(avg)}
+                          {formatCurrency(avgLoc)}
                         </div>
                       </div>
                     </div>
@@ -292,6 +341,99 @@ function DailyRefunds() {
             </div>
           </div>
         </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Main Refunds dashboard component used in the "Refunds" tab.
+ * It provides inner tabs: Daily / Weekly / Monthly / Yearly
+ */
+function DailyRefunds() {
+  const [mode, setMode] = useState("daily");
+
+  const innerTabs = [
+    { id: "daily", label: "Daily" },
+    { id: "weekly", label: "Weekly" },
+    { id: "monthly", label: "Monthly" },
+    { id: "yearly", label: "Yearly" },
+  ];
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {/* Inner tab nav for refunds */}
+      <div
+        style={{
+          display: "flex",
+          gap: 8,
+          marginBottom: 8,
+          flexWrap: "wrap",
+        }}
+      >
+        {innerTabs.map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setMode(t.id)}
+            style={{
+              borderRadius: 999,
+              padding: "6px 14px",
+              border: "1px solid #374151",
+              background:
+                mode === t.id ? "rgba(248,113,113,0.2)" : "rgba(15,23,42,0.6)",
+              color: mode === t.id ? "#fecaca" : "#d1d5db",
+              cursor: "pointer",
+              fontSize: 13,
+            }}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Active view */}
+      {mode === "daily" && (
+        <RefundsView
+          mode="daily"
+          endpoint="/api/refunds/daily"
+          paramName="date"
+          inputType="date"
+          label="Date"
+          initialValue={todayISO}
+        />
+      )}
+
+      {mode === "weekly" && (
+        <RefundsView
+          mode="weekly"
+          endpoint="/api/refunds/weekly"
+          paramName="week"
+          inputType="date"
+          label="Any date in week"
+          initialValue={todayISO}
+        />
+      )}
+
+      {mode === "monthly" && (
+        <RefundsView
+          mode="monthly"
+          endpoint="/api/refunds/monthly"
+          paramName="month"
+          inputType="month"
+          label="Month"
+          initialValue={thisMonth}
+        />
+      )}
+
+      {mode === "yearly" && (
+        <RefundsView
+          mode="yearly"
+          endpoint="/api/refunds/yearly"
+          paramName="year"
+          inputType="number"
+          label="Year"
+          initialValue={thisYear}
+        />
       )}
     </div>
   );

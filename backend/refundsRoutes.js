@@ -230,13 +230,6 @@ export function registerRefundRoutes(app, client) {
   });
 }
 
-/**
- * Shared helper: aggregate refunds across a time range (UTC ISO strings)
- * Uses Refunds API across ALL locations, returns:
- *  - grandTotal (sum of refunds, positive dollars)
- *  - grandCount (# of refunds)
- *  - locations[] with { locationId, locationName, count, total, totalFormatted }
- */
 async function aggregateRefundsForRange(beginTime, endTime, client) {
   // 1) Get all locations for name lookup
   const locationsResp = await client.locations.list();
@@ -245,27 +238,27 @@ async function aggregateRefundsForRange(beginTime, endTime, client) {
     locations.map((loc) => [loc.id, loc.name || loc.id])
   );
 
-  const perLocation = new Map(); // locId -> { locationId, locationName, count, totalCents }
+  const perLocation = new Map(); 
   let grandTotalCents = 0;
   let grandCount = 0;
 
   let cursor = undefined;
 
   do {
-    // ✅ Correct SDK usage
-    const resp = await client.refundsApi.listPaymentRefunds({
+    const resp = await client.refunds.listRefunds({
       beginTime,
       endTime,
       sortOrder: "ASC",
       cursor,
+      // status: "COMPLETED",  // optional filter if you want only completed refunds
     });
 
-    const result = resp.result || {};
-    const refunds = result.refunds || [];
-    cursor = result.cursor;
+    const refunds = resp.refunds || [];
+    cursor = resp.cursor;
 
     for (const ref of refunds) {
       if (!ref) continue;
+      if (ref.status !== "COMPLETED") continue;
 
       const locId = ref.locationId || "UNKNOWN";
       const locName = locationMap.get(locId) || locId;
@@ -283,9 +276,7 @@ async function aggregateRefundsForRange(beginTime, endTime, client) {
 
       const rawMoney = ref.amountMoney?.amount ?? 0n;
       const cents =
-        typeof rawMoney === "bigint"
-          ? Number(rawMoney)
-          : Number(rawMoney || 0);
+        typeof rawMoney === "bigint" ? Number(rawMoney) : Number(rawMoney || 0);
 
       bucket.count += 1;
       bucket.totalCents += cents;
@@ -309,11 +300,10 @@ async function aggregateRefundsForRange(beginTime, endTime, client) {
     };
   });
 
-  const grandTotal = grandTotalCents / 100;
-
   return {
-    grandTotal,
+    grandTotal: grandTotalCents / 100,
     grandCount,
     locations: locationsArr,
   };
 }
+

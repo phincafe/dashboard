@@ -50,10 +50,22 @@ function DailyRefunds() {
   }
 
   const locations = data?.locations || [];
-  const grandTotal = data?.grandRefundTotal ?? null;
+
+  // 🔹 Support BOTH shapes: new (grandTotal) and old (grandRefundTotal)
+  const grandTotal =
+    data?.grandTotal ??
+    data?.grandRefundTotal ??
+    null;
+
   const grandTotalFormatted =
-    data?.grandRefundTotalFormatted || formatCurrency(grandTotal);
-  const grandCount = data?.grandRefundCount ?? null;
+    data?.grandTotalFormatted ||
+    data?.grandRefundTotalFormatted ||
+    formatCurrency(grandTotal);
+
+  const grandCount =
+    data?.grandCount ??
+    data?.grandRefundCount ??
+    null;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>

@@ -231,88 +231,92 @@ export function registerRefundRoutes(app, client) {
 }
 
 /**
+ * Shared helper: per-location refund aggregation for a time range.
+ * Uses the same pattern as your working server file:
+ *   - client.refunds.list({ ... }) returns an async iterable
+ *   - we loop with for await (...)
+ */
+async function aggregateRefundsForLocation(beginTime, endTime, client, locationId) {
+  const refundsIterable = await client.refunds.list({
+    beginTime,
+    endTime,
+    sortOrder: "ASC",
+    locationId,
+  });
+
+  let totalCents = 0;
+  let count = 0;
+  const refunds = [];
+
+  for await (const refund of refundsIterable) {
+    if (!refund) continue;
+    if (refund.status && refund.status !== "COMPLETED") continue;
+
+    const raw = refund.amountMoney?.amount ?? 0n;
+    const amountCents =
+      typeof raw === "bigint" ? Number(raw) : Number(raw || 0);
+
+    totalCents += amountCents;
+    count += 1;
+
+    refunds.push({
+      id: refund.id,
+      paymentId: refund.paymentId,
+      createdAt: refund.createdAt,
+      updatedAt: refund.updatedAt,
+      status: refund.status,
+      amount: amountCents / 100,
+      currency: refund.amountMoney?.currency || "USD",
+      reason: refund.reason,
+      locationId: refund.locationId,
+    });
+  }
+
+  return { totalCents, count, refunds };
+}
+
+/**
  * Shared helper: aggregate refunds across a time range (UTC ISO strings)
- * Uses Refunds API across ALL locations, returns:
+ * across ALL locations, returns:
  *  - grandTotal (sum of refunds, positive dollars)
  *  - grandCount (# of refunds)
  *  - locations[] with { locationId, locationName, count, total, totalFormatted }
  */
 async function aggregateRefundsForRange(beginTime, endTime, client) {
-  // 1) Get all locations for name lookup (using your wrapper)
+  // 1) Get all locations
   const locationsResp = await client.locations.list();
   const locations = locationsResp.locations || [];
-  const locationMap = new Map(
-    locations.map((loc) => [loc.id, loc.name || loc.id])
+
+  const perLocationResults = await Promise.all(
+    locations.map(async (loc) => {
+      const agg = await aggregateRefundsForLocation(beginTime, endTime, client, loc.id);
+      const total = agg.totalCents / 100;
+
+      return {
+        locationId: loc.id,
+        locationName: loc.name || loc.id,
+        count: agg.count,
+        total,
+        totalFormatted: total.toLocaleString("en-US", {
+          style: "currency",
+          currency: agg.refunds[0]?.currency || "USD",
+        }),
+      };
+    })
   );
 
-  const perLocation = new Map(); // locId -> { locationId, locationName, count, totalCents }
-  let grandTotalCents = 0;
-  let grandCount = 0;
-
-  let cursor = undefined;
-
-  do {
-    // 👇 This expects you to provide client.refunds.listPaymentRefunds in index.js
-    const resp = await client.refunds.listPaymentRefunds({
-      beginTime,
-      endTime,
-      sortOrder: "ASC",
-      cursor,
-    });
-
-    const refunds = resp.refunds || [];
-    cursor = resp.cursor;
-
-    for (const ref of refunds) {
-      if (!ref) continue;
-
-      const locId = ref.locationId || "UNKNOWN";
-      const locName = locationMap.get(locId) || locId;
-
-      if (!perLocation.has(locId)) {
-        perLocation.set(locId, {
-          locationId: locId,
-          locationName: locName,
-          count: 0,
-          totalCents: 0,
-        });
-      }
-
-      const bucket = perLocation.get(locId);
-
-      const rawMoney = ref.amountMoney?.amount ?? 0n;
-      const cents =
-        typeof rawMoney === "bigint"
-          ? Number(rawMoney)
-          : Number(rawMoney || 0);
-
-      bucket.count += 1;
-      bucket.totalCents += cents;
-
-      grandCount += 1;
-      grandTotalCents += cents;
-    }
-  } while (cursor);
-
-  const locationsArr = Array.from(perLocation.values()).map((b) => {
-    const total = b.totalCents / 100;
-    return {
-      locationId: b.locationId,
-      locationName: b.locationName,
-      count: b.count,
-      total,
-      totalFormatted: total.toLocaleString("en-US", {
-        style: "currency",
-        currency: "USD",
-      }),
-    };
-  });
-
-  const grandTotal = grandTotalCents / 100;
+  const grandTotal = perLocationResults.reduce(
+    (sum, loc) => sum + (loc.total || 0),
+    0
+  );
+  const grandCount = perLocationResults.reduce(
+    (sum, loc) => sum + (loc.count || 0),
+    0
+  );
 
   return {
     grandTotal,
     grandCount,
-    locations: locationsArr,
+    locations: perLocationResults,
   };
 }

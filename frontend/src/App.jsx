@@ -5,6 +5,7 @@ import WeeklySales from "./components/WeeklySales";
 import MonthlySales from "./components/MonthlySales";
 import YearlySales from "./components/YearlySales";
 import ItemSalesExplorer from "./components/ItemSalesExplorer";
+import DailyRefunds from "./components/DailyRefunds";   // ⭐ ADDED
 
 export const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
@@ -15,7 +16,8 @@ const TABS = [
   { id: "monthly", label: "Monthly" },
   { id: "yearly", label: "Yearly" },
   { id: "hourly", label: "Heatmap" },
-  { id: "items", label: "Items Explorer" }, // 🔹 new tab
+  { id: "items", label: "Items Explorer" },
+  { id: "refunds", label: "Refunds" },      // ⭐ ADDED
 ];
 
 function App() {
@@ -26,8 +28,8 @@ function App() {
       <header style={{ marginBottom: 24 }}>
         <h1 style={{ margin: 0, fontSize: 28 }}>Phin Cafe · Square Reports</h1>
         <p style={{ marginTop: 4, color: "#9ca3af", fontSize: 14 }}>
-          Daily, weekly, monthly, yearly sales + hourly heatmap and item
-          performance.
+          Daily, weekly, monthly, yearly sales + hourly heatmap, item
+          performance, and refunds.
         </p>
       </header>
 
@@ -74,7 +76,8 @@ function App() {
         {activeTab === "monthly" && <MonthlySales />}
         {activeTab === "yearly" && <YearlySales />}
         {activeTab === "hourly" && <HourlyHeatmap />}
-        {activeTab === "items" && <ItemSalesExplorer />} {/* 🔹 use explorer */}
+        {activeTab === "items" && <ItemSalesExplorer />}
+        {activeTab === "refunds" && <DailyRefunds />}   {/* ⭐ ADDED */}
       </section>
 
       <footer style={{ marginTop: 24, fontSize: 12, color: "#6b7280" }}>

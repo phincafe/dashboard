@@ -1,3 +1,4 @@
+// frontend/src/components/HourlyHeatmap.jsx
 import React, { useState } from "react";
 import { API_BASE_URL } from "../App";
 
@@ -9,16 +10,6 @@ function buildHourLabel(h) {
   const suffix = h < 12 ? "AM" : "PM";
   const hour12 = ((h + 11) % 12) + 1;
   return `${hour12}:00 ${suffix}`;
-}
-
-function formatTimeShort(isoString) {
-  if (!isoString) return "?";
-  const d = new Date(isoString);
-  if (Number.isNaN(d.getTime())) return "?";
-  return d.toLocaleTimeString("en-US", {
-    hour: "numeric",
-    minute: "2-digit",
-  });
 }
 
 function HourlyHeatmap() {
@@ -47,7 +38,7 @@ function HourlyHeatmap() {
         url.searchParams.set("comparePrev", "true");
       } else if (mode === "monthly") {
         url = new URL("/api/sales/hourly/monthly", API_BASE_URL);
-        url.searchParams.set("month", monthlyMonth); // YYYY-MM
+        url.searchParams.set("month", monthlyMonth);
         url.searchParams.set("comparePrev", "true");
       } else if (mode === "yearly") {
         url = new URL("/api/sales/hourly/yearly", API_BASE_URL);
@@ -92,10 +83,10 @@ function HourlyHeatmap() {
     ? hourlyObjectToArray(data.comparison.hourly)
     : [];
 
-  const staffByHour = data?.staffByHour || {};
-  const locations = data?.locations || [];
-
   const max = data?.maxHourAllLocations || 0;
+  const staffByHour = data?.staffByHour || {};
+  const hasComparison = !!data?.comparison;
+  const locations = data?.locations || [];
 
   function cellBackground(v) {
     if (!max || !v) return "transparent";
@@ -103,7 +94,26 @@ function HourlyHeatmap() {
     return `rgba(34,197,94,${0.15 + 0.7 * ratio})`;
   }
 
-  const hasComparison = !!data?.comparison;
+  // Collect unique staff names for an hour (across all locations)
+  function getStaffForHour(hour) {
+    const key = String(hour);
+    const perLoc = staffByHour[key];
+    if (!perLoc) return [];
+    const names = new Set();
+
+    for (const loc of locations) {
+      const arr = perLoc[loc.id] || [];
+      for (const entry of arr) {
+        const name =
+          entry.name ||
+          entry.employeeName ||
+          entry.teamMemberId ||
+          "Unknown";
+        names.add(name);
+      }
+    }
+    return Array.from(names);
+  }
 
   // Header label for current period
   let mainLabel = "";
@@ -368,7 +378,7 @@ function HourlyHeatmap() {
                 width: "100%",
                 borderCollapse: "collapse",
                 fontSize: 12,
-                minWidth: hasComparison ? 720 : 480,
+                minWidth: hasComparison ? 840 : 620,
               }}
             >
               <thead>
@@ -404,6 +414,15 @@ function HourlyHeatmap() {
                     }}
                   >
                     Orders
+                  </th>
+                  <th
+                    style={{
+                      textAlign: "left",
+                      padding: 8,
+                      borderBottom: "1px solid #111827",
+                    }}
+                  >
+                    Staff on shift
                   </th>
 
                   {hasComparison && (
@@ -450,6 +469,8 @@ function HourlyHeatmap() {
               </thead>
               <tbody>
                 {hourly.map((bucket) => {
+                  const staffList = getStaffForHour(bucket.hour);
+
                   const prev =
                     comparisonHourly.find((b) => b.hour === bucket.hour) ||
                     {};
@@ -494,6 +515,27 @@ function HourlyHeatmap() {
                         }}
                       >
                         {bucket.countAllLocations}
+                      </td>
+                      <td
+                        style={{
+                          padding: 8,
+                          borderBottom: "1px solid #0b1120",
+                          textAlign: "left",
+                          color: staffList.length ? "#e5e7eb" : "#6b7280",
+                          maxWidth: 220,
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                        }}
+                        title={
+                          staffList.length
+                            ? staffList.join(", ")
+                            : "No staff shifts found"
+                        }
+                      >
+                        {staffList.length
+                          ? staffList.join(", ")
+                          : "—"}
                       </td>
 
                       {hasComparison && (
@@ -564,7 +606,7 @@ function HourlyHeatmap() {
                 {hourly.length === 0 && (
                   <tr>
                     <td
-                      colSpan={hasComparison ? 7 : 3}
+                      colSpan={hasComparison ? 8 : 4}
                       style={{
                         padding: 8,
                         textAlign: "center",
@@ -688,170 +730,6 @@ function HourlyHeatmap() {
               </tbody>
             </table>
           </div>
-        </div>
-      )}
-
-      {/* Staff grid */}
-      {data && (
-        <StaffGrid
-          hourly={hourly}
-          locations={locations}
-          staffByHour={staffByHour}
-        />
-      )}
-    </div>
-  );
-}
-
-function StaffGrid({ hourly, locations, staffByHour }) {
-  // Check if there is any staff at all
-  let anyStaff = false;
-  for (const bucket of hourly) {
-    const hourKey = String(bucket.hour);
-    const row = staffByHour[hourKey] || {};
-    for (const loc of locations) {
-      const arr = row[loc.id] || [];
-      if (arr.length > 0) {
-        anyStaff = true;
-        break;
-      }
-    }
-    if (anyStaff) break;
-  }
-
-  return (
-    <div style={{ marginTop: 20 }}>
-      <div
-        style={{
-          fontSize: 13,
-          color: "#9ca3af",
-          marginBottom: 4,
-        }}
-      >
-        Staff on shift (by hour & location)
-      </div>
-
-      <div
-        style={{
-          overflowX: "auto",
-          borderRadius: 10,
-          border: "1px solid #111827",
-        }}
-      >
-        <table
-          style={{
-            width: "100%",
-            borderCollapse: "collapse",
-            fontSize: 12,
-            minWidth: 600,
-          }}
-        >
-          <thead>
-            <tr
-              style={{
-                background:
-                  "linear-gradient(to right, #020617, #020617, #020617)",
-              }}
-            >
-              <th
-                style={{
-                  textAlign: "left",
-                  padding: 8,
-                  borderBottom: "1px solid #111827",
-                }}
-              >
-                Hour
-              </th>
-              {locations.map((loc) => (
-                <th
-                  key={loc.id}
-                  style={{
-                    textAlign: "left",
-                    padding: 8,
-                    borderBottom: "1px solid #111827",
-                  }}
-                >
-                  {loc.name}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {hourly.map((bucket) => {
-              const hourKey = String(bucket.hour);
-              const row = staffByHour[hourKey] || {};
-
-              return (
-                <tr key={bucket.hour}>
-                  <td
-                    style={{
-                      padding: 8,
-                      borderBottom: "1px solid #0b1120",
-                    }}
-                  >
-                    {buildHourLabel(bucket.hour)}
-                  </td>
-                  {locations.map((loc) => {
-                    const staff = row[loc.id] || [];
-                    const text =
-                      staff.length === 0
-                        ? "—"
-                        : staff
-                            .map((s) => {
-                              const start = formatTimeShort(s.clockIn);
-                              const end = s.clockOut
-                                ? formatTimeShort(s.clockOut)
-                                : "…";
-                              return `${s.employeeName} (${start}–${end})`;
-                            })
-                            .join(", ");
-
-                    return
-                      <td
-                        key={loc.id}
-                        style={{
-                          padding: 8,
-                          borderBottom: "1px solid #0b1120",
-                          color:
-                            staff.length === 0 ? "#4b5563" : "#e5e7eb",
-                        }}
-                      >
-                        {text}
-                      </td>;
-                  })}
-                </tr>
-              );
-            })}
-
-            {hourly.length === 0 && (
-              <tr>
-                <td
-                  colSpan={1 + locations.length}
-                  style={{
-                    padding: 8,
-                    textAlign: "center",
-                    color: "#6b7280",
-                  }}
-                >
-                  No hourly data.
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-
-      {!anyStaff && (
-        <div
-          style={{
-            marginTop: 8,
-            fontSize: 11,
-            color: "#6b7280",
-          }}
-        >
-          No staff timecard data attached to this period yet. Once the backend
-          fills <code>staffByHour[hour][locationId]</code> with employees from
-          Square Timecards/Shifts, they will appear here.
         </div>
       )}
     </div>

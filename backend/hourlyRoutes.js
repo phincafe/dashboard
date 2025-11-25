@@ -516,24 +516,37 @@ async function buildStaffByHourFromLabor({
   }
 
   try {
-    // Use Square Labor API
-    // Make sure your client is configured with the correct access token
     const locationIds = locations.map((l) => l.id);
 
+    console.log(
+      "[Labor] searchShifts for",
+      dateStr,
+      "local range:",
+      dayStart.toISO(),
+      "→",
+      dayEnd.toISO(),
+      "locations:",
+      locationIds
+    );
+
+    // IMPORTANT: use correct body + snake_case field names
     const { result } = await client.laborApi.searchShifts({
-      query: {
-        filter: {
-          locationIds,
-          start: {
-            startAt: dayStart.toISO(),
-            endAt: dayEnd.toISO(),
+      body: {
+        query: {
+          filter: {
+            location_ids: locationIds,
+            status: "CLOSED",
+            start_at: {
+              start_at: dayStart.toISO(),
+              end_at: dayEnd.toISO(),
+            },
           },
-          status: "CLOSED",
         },
       },
     });
 
     const shifts = result?.shifts || [];
+    console.log("[Labor] searchShifts returned", shifts.length, "shifts");
 
     for (const shift of shifts) {
       const locId = shift.locationId || shift.location_id;
@@ -543,8 +556,6 @@ async function buildStaffByHourFromLabor({
       const endStr = shift.endAt || shift.end_at;
       if (!startStr) continue;
 
-      // The timestamp already includes timezone offset (-08:00),
-      // so we let Luxon respect that and then convert into store timezone.
       const startLocal = DateTime.fromISO(startStr, { setZone: true }).setZone(
         timezone
       );
@@ -563,8 +574,7 @@ async function buildStaffByHourFromLabor({
 
         // Overlap if shift intersects the hour block
         if (startLocal < blockEnd && endLocal > blockStart) {
-          const arr =
-            staffByHour[h][locId] || (staffByHour[h][locId] = []);
+          const arr = staffByHour[h][locId] || (staffByHour[h][locId] = []);
 
           const teamMemberId =
             shift.teamMemberId ||

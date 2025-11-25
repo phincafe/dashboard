@@ -361,19 +361,18 @@ function initHourlyBuckets(locations) {
 }
 
 /**
- * Initialize staff buckets for hours 5..20 (5 AM–8 PM) per location.
+ * Initialize staffByHour with hours 5..20 and all locations.
  * staffByHour[hour][locationId] = []
  */
-function initStaffBuckets(locations) {
+function initStaffByHour(locations) {
   const staffByHour = {};
   const locIds = locations.map((l) => l.id);
 
   for (let h = 5; h <= 20; h++) {
-    const perLoc = {};
+    staffByHour[h] = {};
     for (const locId of locIds) {
-      perLoc[locId] = []; // will hold staff names/IDs later
+      staffByHour[h][locId] = [];
     }
-    staffByHour[h] = perLoc;
   }
 
   return staffByHour;
@@ -416,7 +415,7 @@ async function buildHourlySummaryForRange(
   const endTime = end.toUTC().toISO();
 
   const hourly = initHourlyBuckets(locations);
-  const staffByHour = initStaffBuckets(locations); // placeholder for staff/timecards
+  const staffByHour = initStaffByHour(locations);
 
   let totalAllLocationsCents = 0;
   let totalCountAllLocations = 0;
@@ -464,14 +463,15 @@ async function buildHourlySummaryForRange(
     }
   }
 
-  // TODO: Wire up Square Labor / Timecard API here to populate staffByHour:
-  //
-  //  1. Fetch shifts/timecards for [beginTime, endTime] and these locations.
-  //  2. For each shift, figure out which hours (5–20) it overlaps in the store timezone.
-  //  3. Push staff names/IDs into staffByHour[hour][locationId].
-  //
-  // For now, staffByHour will remain empty arrays so the frontend can safely
-  // treat it as "no staff data" and skip rendering.
+  // Fill staffByHour from timecards (safe: swallow API errors)
+  const staffByHourFilled = await buildStaffByHourForRange(
+    start,
+    end,
+    timezone,
+    client,
+    locations,
+    staffByHour
+  );
 
   // Find max total across hours (for heatmap color scaling)
   let maxHourAllLocations = 0;
@@ -487,9 +487,125 @@ async function buildHourlySummaryForRange(
     timezone,
     locations,
     hourly,
-    staffByHour,
+    staffByHour: staffByHourFilled,
     maxHourAllLocations,
     totalAllLocations: totalAllLocationsCents / 100,
     totalCountAllLocations,
   };
+}
+
+/**
+ * Build staff on-shift per hour using Square Timecards (Labor API).
+ *
+ * staffByHour[hour][locationId] = [ "EmployeeId1", "EmployeeId2", ... ]
+ *
+ * - We treat a timecard as "on shift" for all whole hours that overlap the
+ *   [clockIn, clockOut) interval in store local time.
+ * - If clockOutTime is missing (still on shift), we treat end as the end of
+ *   the requested range.
+ */
+async function buildStaffByHourForRange(
+  start,
+  end,
+  timezone,
+  client,
+  locations,
+  staffByHourBase
+) {
+  const staffByHour = { ...staffByHourBase };
+  const locIds = new Set(locations.map((l) => l.id));
+
+  const beginClockInTime = start.toUTC().toISO();
+  const endClockInTime = end.toUTC().toISO();
+
+  let cursor = undefined;
+
+  try {
+    // We use Labor/Timecards: listTimecards with a cursor loop
+    do {
+      // NOTE: If your SDK groups timecards differently, adjust this call.
+      const resp = await client.labor.listTimecards({
+        beginClockInTime,
+        endClockInTime,
+        cursor,
+        limit: 200,
+      });
+
+      const timecards = resp.timecards || [];
+      cursor = resp.cursor;
+
+      for (const tc of timecards) {
+        if (!tc) continue;
+
+        const locationId = tc.locationId || "UNKNOWN";
+        if (!locIds.has(locationId)) {
+          // Skip timecards for locations not in this report
+          continue;
+        }
+
+        const clockInTime = tc.clockInTime;
+        if (!clockInTime) continue;
+
+        const clockInLocal = DateTime.fromISO(clockInTime, {
+          zone: "utc",
+        }).setZone(timezone);
+
+        let clockOutLocal;
+        if (tc.clockOutTime) {
+          clockOutLocal = DateTime.fromISO(tc.clockOutTime, {
+            zone: "utc",
+          }).setZone(timezone);
+        } else {
+          // Still on shift; clamp to end of the reporting range
+          clockOutLocal = end.setZone(timezone);
+        }
+
+        if (!clockInLocal.isValid || !clockOutLocal.isValid) continue;
+        if (clockOutLocal <= clockInLocal) continue; // 0-length or invalid
+
+        // Clamp to reporting day range in local time
+        const rangeStartLocal = start.setZone(timezone);
+        const rangeEndLocal = end.setZone(timezone);
+
+        let shiftStart = clockInLocal < rangeStartLocal ? rangeStartLocal : clockInLocal;
+        let shiftEnd = clockOutLocal > rangeEndLocal ? rangeEndLocal : clockOutLocal;
+
+        if (shiftEnd <= shiftStart) continue;
+
+        // Determine which integer hours [h, h+1) overlap this shift
+        let startHour = shiftStart.hour;
+        let endHour = shiftEnd.hour;
+
+        // If they clock out exactly at e.g. 13:00, we don't include 13
+        if (shiftEnd.minute === 0 && shiftEnd.second === 0 && shiftEnd.millisecond === 0) {
+          endHour = endHour - 1;
+        }
+
+        startHour = Math.max(5, startHour);
+        endHour = Math.min(20, endHour);
+
+        if (endHour < 5 || startHour > 20) continue;
+
+        const staffId = tc.employeeId || tc.teamMemberId || "Unknown staff";
+
+        for (let h = startHour; h <= endHour; h++) {
+          if (!staffByHour[h]) continue;
+          if (!staffByHour[h][locationId]) {
+            staffByHour[h][locationId] = [];
+          }
+
+          // avoid duplicates if we somehow process overlapping timecards
+          if (!staffByHour[h][locationId].includes(staffId)) {
+            staffByHour[h][locationId].push(staffId);
+          }
+        }
+      }
+    } while (cursor);
+  } catch (err) {
+    console.error("Error fetching timecards for staffByHour:", err);
+    // If this fails, we just return the empty staffByHour structure
+    return staffByHourBase;
+  }
+
+  return staffByHour;
 }

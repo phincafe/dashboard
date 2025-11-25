@@ -415,7 +415,7 @@ async function buildHourlySummaryForRange(
   const endTime = end.toUTC().toISO();
 
   const hourly = initHourlyBuckets(locations);
-  const staffByHour = initStaffByHour(locations);
+  const staffByHour = initStaffByHourBuckets(locations);
 
   let totalAllLocationsCents = 0;
   let totalCountAllLocations = 0;
@@ -440,13 +440,11 @@ async function buildHourlySummaryForRange(
       const createdAt = payment.createdAt;
       if (!createdAt) continue;
 
-      // Convert createdAt → store local time → hour 0..23
       const dtLocal = DateTime.fromISO(createdAt, { zone: "utc" }).setZone(
         timezone
       );
       const hour = dtLocal.hour; // 0..23
 
-      // Only track 5..20
       if (hour < 5 || hour > 20) continue;
 
       const bucket = hourly[hour];
@@ -463,15 +461,8 @@ async function buildHourlySummaryForRange(
     }
   }
 
-  // Fill staffByHour from timecards (safe: swallow API errors)
-  const staffByHourFilled = await buildStaffByHourForRange(
-    start,
-    end,
-    timezone,
-    client,
-    locations,
-    staffByHour
-  );
+  // 🔹 Attach staff info via Labor Shifts
+  await attachStaffWithLaborShifts(start, end, timezone, locations, staffByHour);
 
   // Find max total across hours (for heatmap color scaling)
   let maxHourAllLocations = 0;
@@ -483,16 +474,143 @@ async function buildHourlySummaryForRange(
   }
 
   return {
-    ...extra, // may contain { includeDate }
+    ...extra, // may contain includeDate or range
     timezone,
     locations,
     hourly,
-    staffByHour: staffByHourFilled,
+    staffByHour, // 🔹 now returned to frontend
     maxHourAllLocations,
     totalAllLocations: totalAllLocationsCents / 100,
     totalCountAllLocations,
   };
 }
+
+/**
+ * Initialize staffByHour buckets: hours 5..20, each hour has per-location arrays.
+ */
+function initStaffByHourBuckets(locations) {
+  const staffByHour = {};
+  const locIds = locations.map((l) => l.id);
+
+  for (let h = 5; h <= 20; h++) {
+    const perLoc = {};
+    for (const locId of locIds) {
+      perLoc[locId] = [];
+    }
+    staffByHour[h] = perLoc;
+  }
+  return staffByHour;
+}
+
+/**
+ * Try to attach staff-on-shift using Labor Shifts API.
+ * Does NOT throw; logs errors and leaves staffByHour empty on failure.
+ *
+ * - start / end are Luxon DateTime in store timezone
+ * - staffByHour is: { [hour]: { [locationId]: [] } }
+ */
+async function attachStaffWithLaborShifts(start, end, timezone, locations, staffByHour) {
+  const accessToken = process.env.SQUARE_ACCESS_TOKEN;
+  if (!accessToken) {
+    console.warn("No SQUARE_ACCESS_TOKEN set; cannot fetch Labor shifts.");
+    return;
+  }
+
+  const env = (process.env.SQUARE_ENV || "sandbox").toLowerCase();
+  const baseUrl =
+    env === "production"
+      ? "https://connect.squareup.com"
+      : "https://connect.squareupsandbox.com";
+
+  const locationIds = locations.map((l) => l.id);
+
+  // Use the same UTC range as payments
+  const beginTime = start.toUTC().toISO();
+  const endTime = end.toUTC().toISO();
+
+  let cursor = null;
+
+  try {
+    do {
+      const body = {
+        query: {
+          filter: {
+            location_ids: locationIds,
+            start: {
+              start_at: beginTime,
+              end_at: endTime,
+            },
+          },
+        },
+        limit: 200,
+        cursor: cursor || undefined,
+      };
+
+      const resp = await fetch(`${baseUrl}/v2/labor/shifts/search`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+      });
+
+      if (!resp.ok) {
+        const text = await resp.text();
+        console.error("Labor Shifts API error:", resp.status, text);
+        return; // don’t break hourly sales, just skip staff
+      }
+
+      const json = await resp.json();
+      const shifts = json.shifts || [];
+      cursor = json.cursor || null;
+
+      for (const shift of shifts) {
+        const locId = shift.location_id || "UNKNOWN";
+        if (!staffByHour[5] || staffByHour[5][locId] === undefined) {
+          // location not in our list / outside our stores
+          continue;
+        }
+
+        const teamMemberId = shift.team_member_id || "unknown";
+        const startAt = shift.start_at;
+        const endAtRaw = shift.end_at;
+
+        if (!startAt) continue;
+
+        const startLocal = DateTime.fromISO(startAt, { zone: "utc" }).setZone(
+          timezone
+        );
+        const endLocal = endAtRaw
+          ? DateTime.fromISO(endAtRaw, { zone: "utc" }).setZone(timezone)
+          : end; // still on shift → clamp to our end
+
+        // For each hour 5..20, see if shift overlaps that hour block
+        for (let h = 5; h <= 20; h++) {
+          const blockStart = startLocal.startOf("day").set({ hour: h });
+          const blockEnd = blockStart.plus({ hours: 1 });
+
+          // overlap if shiftStart < blockEnd && shiftEnd > blockStart
+          if (startLocal < blockEnd && endLocal > blockStart) {
+            const list = staffByHour[h][locId];
+            // avoid duplicates if a shift somehow overlaps multiple times
+            if (!list.find((s) => s.teamMemberId === teamMemberId)) {
+              list.push({
+                teamMemberId,
+                // These two are nice to have if you later show details:
+                startLocal: startLocal.toISO(),
+                endLocal: endLocal.toISO(),
+              });
+            }
+          }
+        }
+      }
+    } while (cursor);
+  } catch (err) {
+    console.error("attachStaffWithLaborShifts failed:", err);
+  }
+}
+
 
 /**
  * Build staff on-shift per hour using Square Timecards (Labor API).

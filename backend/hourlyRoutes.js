@@ -61,7 +61,7 @@ export function registerHourlyRoutes(app, client) {
       }
 
       res.json({
-        ...baseSummary, // includes includeDate, timezone, locations, hourly, etc.
+        ...baseSummary, // includes includeDate, timezone, locations, hourly, staffByHour, etc.
         comparison,
       });
     } catch (err) {
@@ -361,6 +361,25 @@ function initHourlyBuckets(locations) {
 }
 
 /**
+ * Initialize staff buckets for hours 5..20 (5 AM–8 PM) per location.
+ * staffByHour[hour][locationId] = []
+ */
+function initStaffBuckets(locations) {
+  const staffByHour = {};
+  const locIds = locations.map((l) => l.id);
+
+  for (let h = 5; h <= 20; h++) {
+    const perLoc = {};
+    for (const locId of locIds) {
+      perLoc[locId] = []; // will hold staff names/IDs later
+    }
+    staffByHour[h] = perLoc;
+  }
+
+  return staffByHour;
+}
+
+/**
  * DAILY summary for a single date string (YYYY-MM-DD).
  */
 async function buildHourlySummaryForDate(
@@ -384,10 +403,6 @@ async function buildHourlySummaryForDate(
 /**
  * Range-based hourly summary (used by weekly & monthly & yearly).
  * start and end are Luxon DateTime objects in store timezone.
- *
- * IMPORTANT SPEED CHANGE:
- *   - We call client.payments.list() ONCE (all locations) instead of
- *     looping per location and calling list() N times.
  */
 async function buildHourlySummaryForRange(
   start,
@@ -401,59 +416,62 @@ async function buildHourlySummaryForRange(
   const endTime = end.toUTC().toISO();
 
   const hourly = initHourlyBuckets(locations);
+  const staffByHour = initStaffBuckets(locations); // placeholder for staff/timecards
 
   let totalAllLocationsCents = 0;
   let totalCountAllLocations = 0;
 
-  // Map location IDs for quick check
-  const locationIdSet = new Set(locations.map((l) => l.id));
+  // One payments.list per location
+  for (const loc of locations) {
+    const paymentsIterable = await client.payments.list({
+      beginTime,
+      endTime,
+      sortOrder: "ASC",
+      locationId: loc.id,
+    });
 
-  // Single payments.list over ALL locations
-  const paymentsIterable = await client.payments.list({
-    beginTime,
-    endTime,
-    sortOrder: "ASC",
-    // locationId: omitted => all locations
-  });
+    for await (const payment of paymentsIterable) {
+      if (!payment) continue;
+      if (payment.status && payment.status !== "COMPLETED") continue;
 
-  for await (const payment of paymentsIterable) {
-    if (!payment) continue;
-    if (payment.status && payment.status !== "COMPLETED") continue;
+      const raw = payment.amountMoney?.amount ?? 0n;
+      const amountCents =
+        typeof raw === "bigint" ? Number(raw) : Number(raw || 0);
 
-    const locId = payment.locationId;
-    if (!locId || !locationIdSet.has(locId)) {
-      // If we see a location the dashboard doesn't know about, skip it
-      continue;
+      const createdAt = payment.createdAt;
+      if (!createdAt) continue;
+
+      // Convert createdAt → store local time → hour 0..23
+      const dtLocal = DateTime.fromISO(createdAt, { zone: "utc" }).setZone(
+        timezone
+      );
+      const hour = dtLocal.hour; // 0..23
+
+      // Only track 5..20
+      if (hour < 5 || hour > 20) continue;
+
+      const bucket = hourly[hour];
+      if (!bucket) continue;
+
+      bucket.totalsByLocation[loc.id] += amountCents / 100;
+      bucket.countByLocation[loc.id] += 1;
+
+      bucket.totalAllLocations += amountCents / 100;
+      bucket.countAllLocations += 1;
+
+      totalAllLocationsCents += amountCents;
+      totalCountAllLocations += 1;
     }
-
-    const raw = payment.amountMoney?.amount ?? 0n;
-    const amountCents =
-      typeof raw === "bigint" ? Number(raw) : Number(raw || 0);
-
-    const createdAt = payment.createdAt;
-    if (!createdAt) continue;
-
-    // Convert createdAt → store local time → hour 0..23
-    const dtLocal = DateTime.fromISO(createdAt, { zone: "utc" }).setZone(
-      timezone
-    );
-    const hour = dtLocal.hour; // 0..23
-
-    // Only track 5..20
-    if (hour < 5 || hour > 20) continue;
-
-    const bucket = hourly[hour];
-    if (!bucket) continue;
-
-    bucket.totalsByLocation[locId] += amountCents / 100;
-    bucket.countByLocation[locId] += 1;
-
-    bucket.totalAllLocations += amountCents / 100;
-    bucket.countAllLocations += 1;
-
-    totalAllLocationsCents += amountCents;
-    totalCountAllLocations += 1;
   }
+
+  // TODO: Wire up Square Labor / Timecard API here to populate staffByHour:
+  //
+  //  1. Fetch shifts/timecards for [beginTime, endTime] and these locations.
+  //  2. For each shift, figure out which hours (5–20) it overlaps in the store timezone.
+  //  3. Push staff names/IDs into staffByHour[hour][locationId].
+  //
+  // For now, staffByHour will remain empty arrays so the frontend can safely
+  // treat it as "no staff data" and skip rendering.
 
   // Find max total across hours (for heatmap color scaling)
   let maxHourAllLocations = 0;
@@ -469,6 +487,7 @@ async function buildHourlySummaryForRange(
     timezone,
     locations,
     hourly,
+    staffByHour,
     maxHourAllLocations,
     totalAllLocations: totalAllLocationsCents / 100,
     totalCountAllLocations,

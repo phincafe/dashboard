@@ -48,7 +48,8 @@ function HourlyHeatmap() {
       const res = await fetch(url.toString(), {
         headers: {
           "Content-Type": "application/json",
-          "x-passcode": "7238", // your passcode
+          // keep this if your backend expects x-passcode:
+          "x-passcode": "7238",
         },
       });
 
@@ -101,6 +102,25 @@ function HourlyHeatmap() {
   }
 
   const locations = data?.locations || [];
+
+  // --- Staff-by-hour (optional) ---
+  const staffByHour = data?.staffByHour || null;
+
+  // Flatten staffByHour to check if there's any staff at all
+  let hasAnyStaff = false;
+  if (staffByHour && typeof staffByHour === "object") {
+    for (const [hourKey, perLoc] of Object.entries(staffByHour)) {
+      if (!perLoc || typeof perLoc !== "object") continue;
+      for (const locId of Object.keys(perLoc)) {
+        const arr = perLoc[locId];
+        if (Array.isArray(arr) && arr.length > 0) {
+          hasAnyStaff = true;
+          break;
+        }
+      }
+      if (hasAnyStaff) break;
+    }
+  }
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -674,6 +694,112 @@ function HourlyHeatmap() {
                     </td>
                   </tr>
                 )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Staff on shift (optional, once backend fills staffByHour) */}
+      {data && hasAnyStaff && (
+        <div style={{ marginTop: 16 }}>
+          <div
+            style={{
+              fontSize: 13,
+              color: "#9ca3af",
+              marginBottom: 4,
+            }}
+          >
+            Staff on shift by hour (from Square timecards)
+          </div>
+
+          <div
+            style={{
+              overflowX: "auto",
+              borderRadius: 10,
+              border: "1px solid #111827",
+            }}
+          >
+            <table
+              style={{
+                width: "100%",
+                borderCollapse: "collapse",
+                fontSize: 12,
+                minWidth: 600,
+              }}
+            >
+              <thead>
+                <tr
+                  style={{
+                    background:
+                      "linear-gradient(to right, #020617, #020617, #020617)",
+                  }}
+                >
+                  <th
+                    style={{
+                      textAlign: "left",
+                      padding: 8,
+                      borderBottom: "1px solid #111827",
+                    }}
+                  >
+                    Hour
+                  </th>
+                  {locations.map((loc) => (
+                    <th
+                      key={loc.id}
+                      style={{
+                        textAlign: "left",
+                        padding: 8,
+                        borderBottom: "1px solid #111827",
+                      }}
+                    >
+                      {loc.name}
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {Object.keys(staffByHour || {})
+                  .map((h) => Number(h))
+                  .sort((a, b) => a - b)
+                  .map((hour) => {
+                    const perLoc = staffByHour[hour] || {};
+                    return (
+                      <tr key={hour}>
+                        <td
+                          style={{
+                            padding: 8,
+                            borderBottom: "1px solid #0b1120",
+                          }}
+                        >
+                          {buildHourLabel(hour)}
+                        </td>
+                        {locations.map((loc) => {
+                          const staff = perLoc[loc.id] || [];
+                          const label =
+                            staff.length === 0
+                              ? "—"
+                              : staff.join(", ");
+                          return (
+                            <td
+                              key={loc.id}
+                              style={{
+                                padding: 8,
+                                borderBottom: "1px solid #0b1120",
+                                textAlign: "left",
+                                color:
+                                  staff.length === 0
+                                    ? "#4b5563"
+                                    : "#e5e7eb",
+                              }}
+                            >
+                              {label}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    );
+                  })}
               </tbody>
             </table>
           </div>

@@ -6,7 +6,7 @@ import { SquareClient, SquareEnvironment, SquareError } from "square";
 import { registerHourlyRoutes } from "./hourlyRoutes.js";
 import { registerItemRoutes } from "./itemsRoutes.js";
 import { registerRefundRoutes } from "./refundsRoutes.js";
-
+import { registerLaborRoutes } from "./laborRoutes.js";
 
 dotenv.config();
 
@@ -85,6 +85,7 @@ if (basicPasscode) {
 registerHourlyRoutes(app, client);
 registerItemRoutes(app, client);
 registerRefundRoutes(app, client);
+registerLaborRoutes(app, client);
 
 const STORE_TZ = process.env.STORE_TIMEZONE || "America/Los_Angeles";
 

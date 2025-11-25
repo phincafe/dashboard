@@ -384,6 +384,10 @@ async function buildHourlySummaryForDate(
 /**
  * Range-based hourly summary (used by weekly & monthly & yearly).
  * start and end are Luxon DateTime objects in store timezone.
+ *
+ * IMPORTANT SPEED CHANGE:
+ *   - We call client.payments.list() ONCE (all locations) instead of
+ *     looping per location and calling list() N times.
  */
 async function buildHourlySummaryForRange(
   start,
@@ -401,47 +405,54 @@ async function buildHourlySummaryForRange(
   let totalAllLocationsCents = 0;
   let totalCountAllLocations = 0;
 
-  // One payments.list per location
-  for (const loc of locations) {
-    const paymentsIterable = await client.payments.list({
-      beginTime,
-      endTime,
-      sortOrder: "ASC",
-      locationId: loc.id,
-    });
+  // Map location IDs for quick check
+  const locationIdSet = new Set(locations.map((l) => l.id));
 
-    for await (const payment of paymentsIterable) {
-      if (!payment) continue;
-      if (payment.status && payment.status !== "COMPLETED") continue;
+  // Single payments.list over ALL locations
+  const paymentsIterable = await client.payments.list({
+    beginTime,
+    endTime,
+    sortOrder: "ASC",
+    // locationId: omitted => all locations
+  });
 
-      const raw = payment.amountMoney?.amount ?? 0n;
-      const amountCents =
-        typeof raw === "bigint" ? Number(raw) : Number(raw || 0);
+  for await (const payment of paymentsIterable) {
+    if (!payment) continue;
+    if (payment.status && payment.status !== "COMPLETED") continue;
 
-      const createdAt = payment.createdAt;
-      if (!createdAt) continue;
-
-      // Convert createdAt → store local time → hour 0..23
-      const dtLocal = DateTime.fromISO(createdAt, { zone: "utc" }).setZone(
-        timezone
-      );
-      const hour = dtLocal.hour; // 0..23
-
-      // Only track 5..20
-      if (hour < 5 || hour > 20) continue;
-
-      const bucket = hourly[hour];
-      if (!bucket) continue;
-
-      bucket.totalsByLocation[loc.id] += amountCents / 100;
-      bucket.countByLocation[loc.id] += 1;
-
-      bucket.totalAllLocations += amountCents / 100;
-      bucket.countAllLocations += 1;
-
-      totalAllLocationsCents += amountCents;
-      totalCountAllLocations += 1;
+    const locId = payment.locationId;
+    if (!locId || !locationIdSet.has(locId)) {
+      // If we see a location the dashboard doesn't know about, skip it
+      continue;
     }
+
+    const raw = payment.amountMoney?.amount ?? 0n;
+    const amountCents =
+      typeof raw === "bigint" ? Number(raw) : Number(raw || 0);
+
+    const createdAt = payment.createdAt;
+    if (!createdAt) continue;
+
+    // Convert createdAt → store local time → hour 0..23
+    const dtLocal = DateTime.fromISO(createdAt, { zone: "utc" }).setZone(
+      timezone
+    );
+    const hour = dtLocal.hour; // 0..23
+
+    // Only track 5..20
+    if (hour < 5 || hour > 20) continue;
+
+    const bucket = hourly[hour];
+    if (!bucket) continue;
+
+    bucket.totalsByLocation[locId] += amountCents / 100;
+    bucket.countByLocation[locId] += 1;
+
+    bucket.totalAllLocations += amountCents / 100;
+    bucket.countAllLocations += 1;
+
+    totalAllLocationsCents += amountCents;
+    totalCountAllLocations += 1;
   }
 
   // Find max total across hours (for heatmap color scaling)

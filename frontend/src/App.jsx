@@ -18,6 +18,7 @@ const TABS = [
   { id: "hourly", label: "Heatmap" },
   { id: "items", label: "Items Explorer" },
   { id: "refunds", label: "Refunds" }, // 🔸 single refunds tab
+  { id: "staff", label: "Staff Shifts" }, 
 ];
 
 function App() {
@@ -78,6 +79,7 @@ function App() {
         {activeTab === "hourly" && <HourlyHeatmap />}
         {activeTab === "items" && <ItemSalesExplorer />}
         {activeTab === "refunds" && <RefundsDashboard />}
+        {activeTab === "staff" && <StaffShiftsPage />}
       </section>
 
       <footer style={{ marginTop: 24, fontSize: 12, color: "#6b7280" }}>

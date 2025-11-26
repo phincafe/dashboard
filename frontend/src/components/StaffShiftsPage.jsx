@@ -1,60 +1,49 @@
-// StaffShiftsPage.jsx
+// src/pages/StaffShiftsPage.jsx
 import React, { useState } from "react";
 import { API_BASE_URL } from "../App";
 
-const todayISO = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+const todayISO = new Date().toISOString().slice(0, 10);
 
-function formatTime(isoString) {
-  if (!isoString) return "—";
-  const d = new Date(isoString);
-  if (Number.isNaN(d.getTime())) return isoString;
-  return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-}
-
-function durationHours(startIso, endIso) {
-  if (!startIso || !endIso) return "—";
-  const start = new Date(startIso);
-  const end = new Date(endIso);
-  const diffMs = end - start;
-  if (diffMs <= 0 || Number.isNaN(diffMs)) return "—";
-  const hours = diffMs / (1000 * 60 * 60);
-  return hours.toFixed(2);
-}
-
-function centsToDollars(cents) {
-  if (cents == null) return "—";
-  return `$${(cents / 100).toFixed(2)}`;
+function fmtTime(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return d.toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }
 
 export default function StaffShiftsPage() {
   const [date, setDate] = useState(todayISO);
+  const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [data, setData] = useState(null);
 
-  async function fetchShifts() {
+  async function loadShifts() {
     setLoading(true);
     setError("");
     try {
-      const url = new URL("/api/labor/shifts", API_BASE_URL);
+      const url = new URL("/api/staff/shifts", API_BASE_URL);
       url.searchParams.set("date", date);
 
       const res = await fetch(url.toString(), {
         headers: {
           "Content-Type": "application/json",
-          "x-passcode": "7238", // same passcode you use elsewhere
+          "x-passcode": "7238", // same as your other endpoints if needed
         },
       });
 
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        throw new Error(body.error || "Failed to load shifts");
+        throw new Error(body.error || "Failed to load staff shifts");
       }
 
       const json = await res.json();
+      console.log("StaffShiftsPage data:", json); // 👈 debug
       setData(json);
     } catch (err) {
-      setError(err.message || "Error loading shifts");
+      console.error("Error in StaffShiftsPage:", err);
+      setError(err.message || "Error loading staff shifts");
       setData(null);
     } finally {
       setLoading(false);
@@ -62,28 +51,24 @@ export default function StaffShiftsPage() {
   }
 
   const shifts = data?.shifts || [];
+  const locations = data?.locations || [];
 
-  // Group by location for nicer display
-  const shiftsByLocation = shifts.reduce((acc, s) => {
-    const locId = s.locationId || "UNKNOWN";
-    if (!acc[locId]) acc[locId] = [];
-    acc[locId].push(s);
+  // Group shifts by location for nicer display
+  const shiftsByLocation = locations.reduce((acc, loc) => {
+    acc[loc.id] = [];
     return acc;
   }, {});
 
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      <h2 style={{ fontSize: 20, fontWeight: 600 }}>Staff Shifts (Labor)</h2>
+  for (const s of shifts) {
+    const locId = s.location_id || s.locationId;
+    if (!locId) continue;
+    if (!shiftsByLocation[locId]) shiftsByLocation[locId] = [];
+    shiftsByLocation[locId].push(s);
+  }
 
-      {/* Controls */}
-      <div
-        style={{
-          display: "flex",
-          gap: 12,
-          alignItems: "center",
-          flexWrap: "wrap",
-        }}
-      >
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
         <label style={{ fontSize: 14 }}>
           Date:&nbsp;
           <input
@@ -102,7 +87,7 @@ export default function StaffShiftsPage() {
         </label>
 
         <button
-          onClick={fetchShifts}
+          onClick={loadShifts}
           disabled={loading}
           style={{
             padding: "8px 16px",
@@ -120,7 +105,6 @@ export default function StaffShiftsPage() {
         </button>
       </div>
 
-      {/* Error */}
       {error && (
         <div
           style={{
@@ -136,117 +120,102 @@ export default function StaffShiftsPage() {
         </div>
       )}
 
-      {/* Summary */}
       {data && (
-        <div
-          style={{
-            display: "flex",
-            gap: 16,
-            flexWrap: "wrap",
-            marginTop: 4,
-            marginBottom: 8,
-          }}
-        >
-          <div
-            style={{
-              flex: "1 1 180px",
-              padding: 12,
-              borderRadius: 12,
-              border: "1px solid #1f2937",
-              background: "rgba(15,23,42,0.9)",
-            }}
-          >
-            <div style={{ fontSize: 11, color: "#9ca3af" }}>DATE</div>
-            <div style={{ fontSize: 16, fontWeight: 600, marginTop: 4 }}>
-              {data.date}
-            </div>
-            <div style={{ fontSize: 11, color: "#6b7280", marginTop: 2 }}>
-              {data.timezone}
-            </div>
-          </div>
-
-          <div
-            style={{
-              flex: "1 1 180px",
-              padding: 12,
-              borderRadius: 12,
-              border: "1px solid #1f2937",
-              background: "rgba(15,23,42,0.9)",
-            }}
-          >
-            <div style={{ fontSize: 11, color: "#9ca3af" }}>TOTAL SHIFTS</div>
-            <div style={{ fontSize: 20, fontWeight: 700, marginTop: 4 }}>
-              {shifts.length}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Table */}
-      {data && (
-        <div>
-          <div
-            style={{
-              fontSize: 13,
-              color: "#9ca3af",
-              marginBottom: 4,
-            }}
-          >
-            Shifts for {data.date} (by location)
-          </div>
-
+        <>
           <div
             style={{
               display: "flex",
-              flexDirection: "column",
               gap: 16,
+              flexWrap: "wrap",
+              marginTop: 4,
+              marginBottom: 8,
             }}
           >
-            {Object.keys(shiftsByLocation).length === 0 && (
-              <div style={{ fontSize: 13, color: "#6b7280" }}>
-                No shifts found for this date.
+            <div
+              style={{
+                flex: "1 1 160px",
+                padding: 12,
+                borderRadius: 12,
+                border: "1px solid #1f2937",
+                background: "rgba(15,23,42,0.9)",
+              }}
+            >
+              <div style={{ fontSize: 11, color: "#9ca3af" }}>DATE</div>
+              <div style={{ fontSize: 16, fontWeight: 600, marginTop: 4 }}>
+                {data.date}
               </div>
-            )}
+              <div style={{ fontSize: 11, color: "#6b7280", marginTop: 2 }}>
+                {data.timezone}
+              </div>
+            </div>
 
-            {Object.entries(shiftsByLocation).map(([locId, locShifts]) => (
-              <div key={locId}>
+            <div
+              style={{
+                flex: "1 1 160px",
+                padding: 12,
+                borderRadius: 12,
+                border: "1px solid #1f2937",
+                background: "rgba(15,23,42,0.9)",
+              }}
+            >
+              <div style={{ fontSize: 11, color: "#9ca3af" }}>TOTAL SHIFTS</div>
+              <div style={{ fontSize: 20, fontWeight: 700, marginTop: 4 }}>
+                {shifts.length}
+              </div>
+              <div style={{ fontSize: 11, color: "#6b7280", marginTop: 2 }}>
+                Across {locations.length} locations
+              </div>
+            </div>
+          </div>
+
+          {/* Per-location cards */}
+          {locations.map((loc) => {
+            const locShifts = shiftsByLocation[loc.id] || [];
+            return (
+              <div
+                key={loc.id}
+                style={{
+                  marginBottom: 16,
+                  borderRadius: 12,
+                  border: "1px solid #1f2937",
+                  background: "rgba(15,23,42,0.9)",
+                  padding: 12,
+                }}
+              >
                 <div
                   style={{
                     fontSize: 14,
                     fontWeight: 600,
-                    marginBottom: 4,
-                    color: "#e5e7eb",
+                    marginBottom: 8,
+                    display: "flex",
+                    justifyContent: "space-between",
                   }}
                 >
-                  Location: {locId}
+                  <span>{loc.name}</span>
+                  <span style={{ fontSize: 12, color: "#9ca3af" }}>
+                    {locShifts.length} shift
+                    {locShifts.length === 1 ? "" : "s"}
+                  </span>
                 </div>
 
-                <div
-                  style={{
-                    overflowX: "auto",
-                    borderRadius: 10,
-                    border: "1px solid #111827",
-                  }}
-                >
+                {locShifts.length === 0 ? (
+                  <div style={{ fontSize: 12, color: "#6b7280" }}>
+                    No shifts for this location.
+                  </div>
+                ) : (
                   <table
                     style={{
                       width: "100%",
                       borderCollapse: "collapse",
                       fontSize: 12,
-                      minWidth: 600,
                     }}
                   >
                     <thead>
-                      <tr
-                        style={{
-                          background:
-                            "linear-gradient(to right, #020617, #020617, #020617)",
-                        }}
-                      >
+                      <tr>
                         <th
                           style={{
                             textAlign: "left",
-                            padding: 8,
+                            padding: 6,
                             borderBottom: "1px solid #111827",
                           }}
                         >
@@ -255,7 +224,7 @@ export default function StaffShiftsPage() {
                         <th
                           style={{
                             textAlign: "left",
-                            padding: 8,
+                            padding: 6,
                             borderBottom: "1px solid #111827",
                           }}
                         >
@@ -264,7 +233,7 @@ export default function StaffShiftsPage() {
                         <th
                           style={{
                             textAlign: "left",
-                            padding: 8,
+                            padding: 6,
                             borderBottom: "1px solid #111827",
                           }}
                         >
@@ -273,7 +242,7 @@ export default function StaffShiftsPage() {
                         <th
                           style={{
                             textAlign: "left",
-                            padding: 8,
+                            padding: 6,
                             borderBottom: "1px solid #111827",
                           }}
                         >
@@ -282,25 +251,7 @@ export default function StaffShiftsPage() {
                         <th
                           style={{
                             textAlign: "right",
-                            padding: 8,
-                            borderBottom: "1px solid #111827",
-                          }}
-                        >
-                          Hours
-                        </th>
-                        <th
-                          style={{
-                            textAlign: "right",
-                            padding: 8,
-                            borderBottom: "1px solid #111827",
-                          }}
-                        >
-                          Hourly Rate
-                        </th>
-                        <th
-                          style={{
-                            textAlign: "left",
-                            padding: 8,
+                            padding: 6,
                             borderBottom: "1px solid #111827",
                           }}
                         >
@@ -309,74 +260,66 @@ export default function StaffShiftsPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {locShifts.map((s) => (
-                        <tr key={s.id}>
+                      {locShifts.map((shift) => (
+                        <tr key={shift.id}>
                           <td
                             style={{
-                              padding: 8,
-                              borderBottom: "1px solid #0b1120",
+                              padding: 6,
+                              borderBottom: "1px solid #020617",
                             }}
                           >
-                            {s.teamMemberId || s.employeeId || "—"}
+                            {shift.team_member_id ||
+                              shift.teamMemberId ||
+                              shift.employee_id ||
+                              shift.employeeId}
                           </td>
                           <td
                             style={{
-                              padding: 8,
-                              borderBottom: "1px solid #0b1120",
+                              padding: 6,
+                              borderBottom: "1px solid #020617",
                             }}
                           >
-                            {s.wageTitle || "—"}
+                            {shift.wage?.title || "—"}
                           </td>
                           <td
                             style={{
-                              padding: 8,
-                              borderBottom: "1px solid #0b1120",
+                              padding: 6,
+                              borderBottom: "1px solid #020617",
                             }}
                           >
-                            {formatTime(s.startAt)}
+                            {fmtTime(shift.start_at || shift.startAt)}
                           </td>
                           <td
                             style={{
-                              padding: 8,
-                              borderBottom: "1px solid #0b1120",
+                              padding: 6,
+                              borderBottom: "1px solid #020617",
                             }}
                           >
-                            {formatTime(s.endAt)}
+                            {fmtTime(shift.end_at || shift.endAt)}
                           </td>
                           <td
                             style={{
-                              padding: 8,
-                              borderBottom: "1px solid #0b1120",
+                              padding: 6,
+                              borderBottom: "1px solid #020617",
                               textAlign: "right",
                             }}
                           >
-                            {durationHours(s.startAt, s.endAt)}
-                          </td>
-                          <td
-                            style={{
-                              padding: 8,
-                              borderBottom: "1px solid #0b1120",
-                              textAlign: "right",
-                            }}
-                          >
-                            {centsToDollars(s.hourlyRateCents)}
-                          </td>
-                          <td
-                            style={{
-                              padding: 8,
-                              borderBottom: "1px solid #0b1120",
-                            }}
-                          >
-                            {s.status}
+                            {shift.status || "—"}
                           </td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
-                </div>
+                )}
               </div>
-            ))}
-          </div>
+            );
+          })}
+        </>
+      )}
+
+      {!data && !error && !loading && (
+        <div style={{ fontSize: 13, color: "#6b7280" }}>
+          Pick a date and click <b>Load Shifts</b> to see who worked that day.
         </div>
       )}
     </div>

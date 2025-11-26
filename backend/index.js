@@ -7,6 +7,7 @@ import { registerHourlyRoutes } from "./hourlyRoutes.js";
 import { registerItemRoutes } from "./itemsRoutes.js";
 import { registerRefundRoutes } from "./refundsRoutes.js";
 import { registerLaborRoutes } from "./laborRoutes.js";
+import { registerStaffRoutes } from "./staffRoutes.js";
 
 dotenv.config();
 
@@ -86,6 +87,7 @@ registerHourlyRoutes(app, client);
 registerItemRoutes(app, client);
 registerRefundRoutes(app, client);
 registerLaborRoutes(app, client);
+registerStaffRoutes(app, client);
 
 const STORE_TZ = process.env.STORE_TIMEZONE || "America/Los_Angeles";
 

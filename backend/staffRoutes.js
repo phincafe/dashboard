@@ -1,13 +1,15 @@
 // staffRoutes.js
 import { DateTime } from "luxon";
-import { SquareError } from "square";
+import { SquareError } from "square"; // you can keep this for consistency with other routes
 
 export function registerStaffRoutes(app, client) {
   /**
    * GET /api/staff/shifts?date=YYYY-MM-DD
    *
-   * Very simple: uses Labor API searchShifts and just returns { date, timezone, locations, shifts }
-   * Structure of `shifts` is the same as your working cURL response.
+   * Uses the same filter as your working cURL:
+   *  - location_ids: all store locations
+   *  - start_at: day in UTC (00:00 → 23:59:59)
+   * Returns: { date, timezone, locations, shifts }
    */
   app.get("/api/staff/shifts", async (req, res) => {
     const timezone = process.env.STORE_TIMEZONE || "America/Los_Angeles";
@@ -15,6 +17,13 @@ export function registerStaffRoutes(app, client) {
 
     if (!dateStr) {
       return res.status(400).json({ error: "Missing date=YYYY-MM-DD" });
+    }
+
+    const accessToken = process.env.SQUARE_ACCESS_TOKEN;
+    if (!accessToken) {
+      return res.status(500).json({
+        error: "Missing SQUARE_ACCESS_TOKEN env var",
+      });
     }
 
     try {
@@ -27,7 +36,7 @@ export function registerStaffRoutes(app, client) {
         return res.status(400).json({ error: "Invalid date format" });
       }
 
-      // Get all locations to know names + ids
+      // 1) Get locations so we can show names in the UI
       const locationsResp = await client.locations.list();
       const locationsRaw =
         locationsResp.result?.locations || locationsResp.locations || [];
@@ -35,37 +44,58 @@ export function registerStaffRoutes(app, client) {
         id: loc.id,
         name: loc.name || loc.id,
       }));
+
       const locationIds = locations.map((l) => l.id);
 
-      // Build query equivalent to your cURL:
-      // start_at: 2025-11-24T00:00:00Z – 23:59:59Z
-      const startUtc = dayStart.toUTC().toISO(); // 00:00 in UTC
-      const endUtc = dayEnd.toUTC().toISO(); // 23:59:59 in UTC
+      // 2) Build the SAME body as your cURL (snake_case!)
+      const startUtc = dayStart.toUTC().toISO(); // 2025-11-24T00:00:00Z
+      const endUtc = dayEnd.toUTC().toISO();     // 2025-11-24T23:59:59Z
 
       const body = {
         query: {
           filter: {
-            locationIds, // SDK camelCase
+            location_ids: locationIds,
             start: {
-              startAt: startUtc,
-              endAt: endUtc,
+              start_at: startUtc,
+              end_at: endUtc,
             },
-            // You can also add: status: "CLOSED"
+            // Optional: filter only CLOSED shifts
+            // status: "CLOSED",
           },
         },
         limit: 200,
       };
 
-      // Call Labor API
-      const response = await client.laborApi.searchShifts(body);
+      // 3) Call the REST API directly with fetch
+      const resp = await fetch(
+        "https://connect.squareup.com/v2/labor/shifts/search",
+        {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(body),
+        }
+      );
 
-      // The SDK returns { result: { shifts: [...] } }
-      const shifts =
-        response.result?.shifts ||
-        response.shifts ||
-        [];
+      if (!resp.ok) {
+        const errorText = await resp.text().catch(() => "");
+        console.error(
+          "[staffRoutes] Labor searchShifts HTTP error:",
+          resp.status,
+          errorText
+        );
+        return res.status(502).json({
+          error: "Square Labor API error",
+          status: resp.status,
+          body: errorText,
+        });
+      }
 
-      // Helpful logging for debugging:
+      const json = await resp.json();
+      const shifts = json.shifts || [];
+
       console.log(
         `[staffRoutes] /api/staff/shifts date=${dateStr} shifts=${shifts.length}`
       );
@@ -79,6 +109,7 @@ export function registerStaffRoutes(app, client) {
     } catch (err) {
       console.error("Error fetching staff shifts:", err);
 
+      // Keep this block if you like, but most errors here are not SquareError anymore
       if (err instanceof SquareError) {
         return res.status(502).json({
           error: "Square API error",

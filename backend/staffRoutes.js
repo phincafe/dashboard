@@ -2,119 +2,20 @@
 import { DateTime } from "luxon";
 import { SquareError } from "square";
 
-/**
- * Build a map of team_member_id -> team member object
- * We try both searchTeamMembers and listTeamMembers, and both camelCase/snake_case fields.
- */
-async function fetchTeamMemberMap(client) {
-  const map = {};
-
-  try {
-    let teamMembers = [];
-
-    // Try searchTeamMembers first
-    if (client.team && typeof client.team.searchTeamMembers === "function") {
-      const resp = await client.team.searchTeamMembers({
-        query: {
-          filter: {
-            status: "ACTIVE",
-          },
-        },
-      });
-
-      teamMembers =
-        resp.result?.teamMembers ||
-        resp.teamMembers ||
-        resp.result?.team_members ||
-        resp.team_members ||
-        [];
-    }
-    // Fallback: listTeamMembers
-    else if (client.team && typeof client.team.listTeamMembers === "function") {
-      const resp = await client.team.listTeamMembers({});
-      teamMembers =
-        resp.result?.teamMembers ||
-        resp.teamMembers ||
-        resp.result?.team_members ||
-        resp.team_members ||
-        [];
-    } else {
-      console.warn(
-        "[staffRoutes] client.team has no searchTeamMembers/listTeamMembers; cannot map names."
-      );
-      return map;
-    }
-
-    for (const m of teamMembers) {
-      if (!m) continue;
-
-      // ID can be id or teamMemberId depending on SDK shape
-      const id = m.id || m.teamMemberId || m.team_member_id;
-      if (!id) continue;
-
-      map[id] = m;
-    }
-
-    console.log(
-      `[staffRoutes] fetchTeamMemberMap: loaded ${Object.keys(map).length} team members`
-    );
-  } catch (err) {
-    console.error("[staffRoutes] Error fetching team members:", err);
-  }
-
-  return map;
-}
-
-/**
- * Helper to compute a nice display name from a teamMember object + fallback ID
- */
-function getTeamMemberDisplayName(member, fallbackId) {
-  if (!member) return fallbackId || "Unknown";
-
-  const given =
-    member.given_name || member.givenName || member.first_name || member.firstName;
-  const family =
-    member.family_name || member.familyName || member.last_name || member.lastName;
-  const reference = member.reference_id || member.referenceId;
-  const nickname = member.nickname || member.nick_name;
-  const email = member.email_address || member.emailAddress;
-
-  const full = [given, family].filter(Boolean).join(" ").trim();
-
-  return (
-    full ||
-    nickname ||
-    reference ||
-    email ||
-    fallbackId ||
-    "Unknown"
-  );
-}
-
 export function registerStaffRoutes(app, client) {
-  /**
-   * GET /api/staff/shifts?date=YYYY-MM-DD
-   *
-   * Returns:
-   * {
-   *   date,
-   *   timezone,
-   *   locations: [{ id, name }],
-   *   shifts: [
-   *     {
-   *       ...shiftFromLabor,
-   *       team_member_id: "...",
-   *       team_member_name: "Full Name"
-   *     }
-   *   ]
-   * }
-   */
   app.get("/api/staff/shifts", async (req, res) => {
     const timezone = process.env.STORE_TIMEZONE || "America/Los_Angeles";
     const dateStr = req.query.date;
 
     if (!dateStr) {
       return res.status(400).json({ error: "Missing date=YYYY-MM-DD" });
+    }
+
+    const accessToken = process.env.SQUARE_ACCESS_TOKEN;
+    if (!accessToken) {
+      return res.status(500).json({
+        error: "Missing SQUARE_ACCESS_TOKEN env var",
+      });
     }
 
     try {
@@ -127,7 +28,7 @@ export function registerStaffRoutes(app, client) {
         return res.status(400).json({ error: "Invalid date format" });
       }
 
-      // Locations for nice names
+      // 1) Locations (for names in UI)
       const locationsResp = await client.locations.list();
       const locationsRaw =
         locationsResp.result?.locations || locationsResp.locations || [];
@@ -137,40 +38,58 @@ export function registerStaffRoutes(app, client) {
       }));
       const locationIds = locations.map((l) => l.id);
 
-      // Time window (UTC) for this day – same as your curl
+      // 2) Build body like your working cURL (snake_case!)
       const startUtc = dayStart.toUTC().toISO();
       const endUtc = dayEnd.toUTC().toISO();
 
-      const body = {
+      const laborBody = {
         query: {
           filter: {
-            locationIds, // camelCase for SDK
+            location_ids: locationIds,
             start: {
-              startAt: startUtc,
-              endAt: endUtc,
+              start_at: startUtc,
+              end_at: endUtc,
             },
-            status: "CLOSED",
+            // status: "CLOSED", // optional
           },
         },
         limit: 200,
       };
 
-      // Labor API (we already know client.labor.searchShifts works)
-      const response = await client.labor.searchShifts(body);
-
-      const rawShifts =
-        response.result?.shifts ||
-        response.shifts ||
-        [];
-
-      console.log(
-        `[staffRoutes] /api/staff/shifts date=${dateStr} rawShifts=${rawShifts.length}`
+      // 3) Call Labor API directly
+      const shiftResp = await fetch(
+        "https://connect.squareup.com/v2/labor/shifts/search",
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(laborBody),
+        }
       );
 
-      // Load team member map (id => member object)
-      const teamMemberMap = await fetchTeamMemberMap(client);
+      if (!shiftResp.ok) {
+        const errorText = await shiftResp.text().catch(() => "");
+        console.error(
+          "[staffRoutes] Labor searchShifts HTTP error:",
+          shiftResp.status,
+          errorText
+        );
+        return res.status(502).json({
+          error: "Square Labor API error",
+          status: shiftResp.status,
+          body: errorText,
+        });
+      }
 
-      // Annotate shifts with team_member_id and team_member_name
+      const shiftJson = await shiftResp.json();
+      const rawShifts = shiftJson.shifts || [];
+
+      // 4) Fetch team members to map IDs -> names
+      const teamMap = await fetchTeamMemberMap(accessToken);
+
+      // 5) Enrich shifts with team_member_name
       const shifts = rawShifts.map((shift) => {
         const tmId =
           shift.team_member_id ||
@@ -178,15 +97,24 @@ export function registerStaffRoutes(app, client) {
           shift.employee_id ||
           shift.employeeId;
 
-        const member = tmId ? teamMemberMap[tmId] : undefined;
-        const displayName = getTeamMemberDisplayName(member, tmId);
+        const member = tmId ? teamMap[tmId] : null;
+
+        const displayName = member
+          ? [member.given_name, member.family_name]
+              .filter(Boolean)
+              .join(" ")
+          : tmId || "Unknown";
 
         return {
           ...shift,
-          team_member_id: tmId || null,
+          team_member_id: tmId,
           team_member_name: displayName,
         };
       });
+
+      console.log(
+        `[staffRoutes] /api/staff/shifts date=${dateStr} shifts=${shifts.length}`
+      );
 
       res.json({
         date: dateStr,
@@ -207,21 +135,50 @@ export function registerStaffRoutes(app, client) {
       res.status(500).json({ error: "Unexpected server error" });
     }
   });
+}
 
-  /**
-   * Optional debug endpoint so you can see what team members look like
-   * GET /api/staff/team-members
-   */
-  app.get("/api/staff/team-members", async (req, res) => {
-    try {
-      const teamMemberMap = await fetchTeamMemberMap(client);
-      res.json({
-        count: Object.keys(teamMemberMap).length,
-        teamMembers: Object.values(teamMemberMap),
-      });
-    } catch (err) {
-      console.error("Error in /api/staff/team-members:", err);
-      res.status(500).json({ error: "Failed to fetch team members" });
+/**
+ * Fetch all team members and build a map: id -> member object
+ * Uses GET /v2/team-members
+ */
+async function fetchTeamMemberMap(accessToken) {
+  const url = "https://connect.squareup.com/v2/team-members?limit=200";
+
+  try {
+    const resp = await fetch(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+    });
+
+    if (!resp.ok) {
+      const text = await resp.text().catch(() => "");
+      console.error(
+        "[staffRoutes] Team members HTTP error:",
+        resp.status,
+        text
+      );
+      return {};
     }
-  });
+
+    const json = await resp.json();
+    const members = json.team_members || [];
+    const map = {};
+
+    for (const m of members) {
+      if (!m.id) continue;
+      map[m.id] = m;
+    }
+
+    console.log(
+      `[staffRoutes] Loaded ${members.length} team members into map`
+    );
+
+    return map;
+  } catch (err) {
+    console.error("Error fetching team members:", err);
+    return {};
+  }
 }

@@ -7,7 +7,7 @@ import MonthlySales from "./components/MonthlySales";
 import YearlySales from "./components/YearlySales";
 import ItemSalesExplorer from "./components/ItemSalesExplorer";
 import RefundsDashboard from "./components/RefundsDashboard";
-import StaffShiftsPage from "./pages/StaffShiftsPage";
+import StaffShiftsPage from "./components/StaffShiftsPage";
 
 export const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";

@@ -7,7 +7,7 @@ function formatTime(isoString) {
   const d = new Date(isoString);
   return d.toLocaleTimeString("en-US", {
     hour: "numeric",
-    minute: "2-digit",
+    minute: "2-digit", 
   });
 }
 

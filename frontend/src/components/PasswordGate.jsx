@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 
 export default function PasswordGate({ children }) {
-  const correctPassword = import.meta.env.VITE_DASHBOARD_PASSWORD;
+  const correctPassword = import.env.VITE_DASHBOARD_PASSWORD;
   const [input, setInput] = useState("");
   const [unlocked, setUnlocked] = useState(false);
 
